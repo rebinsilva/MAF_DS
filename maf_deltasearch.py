@@ -5,7 +5,6 @@ import io
 import random
 import signal
 import sys
-from copy import deepcopy
 
 import networkx as nx
 from Bio import Phylo
@@ -81,7 +80,7 @@ class AgreementSpec:
         T1_roots = set(nxt_roots)
         T2 = self._T2.copy()
         for T1_root in T1_roots:
-            
+
             # TODO: Simplify to make this faster
             T1_component = nx.descendants(T1_contracted, T1_root) | {T1_root}
             S = frozenset(T1_component & self._all_leaves)
@@ -126,11 +125,12 @@ class GraphSeeker:
         self.result = nx.create_empty_copy(self.graph)
         self.best_score = self.score(self.result)
         self.empty_score = self.best_score
+        self.out_trees = [nx.empty_graph(n=[leaf,], create_using=nx.DiGraph) for leaf in leaves]
 
         # https://optil.io/optilion/help/signals
         signal.signal(signal.SIGINT, self.exit)
         signal.signal(signal.SIGTERM, self.exit)
-    
+
     def run(self):
         c = list(self.graph.edges())
         while True:
@@ -155,29 +155,36 @@ class GraphSeeker:
                             if cur_score > self.best_score:
                                 self.result = cur_graph
                                 self.best_score = cur_score
+                                self.out_trees = self.prepare_solution(self.result)
                                 continue
                     cur_graph.remove_edges_from(tst_subset)
-            
-            self.exit(None, None)
+
+            # self.exit(None, None)
             c = list(self.graph.edges())
             random.shuffle(c)
 
-    def exit(self, signum, frame):
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    def prepare_solution(self, graph):
         all_leaves = self.leaves
         out_trees = []
-        for comp in list(nx.weakly_connected_components(self.result)):
+        all_roots = {v for v in graph.nodes() if graph.in_degree(v) == 0}
+        for comp in list(nx.weakly_connected_components(graph)):
             if not (comp & all_leaves):
                 continue
-            roots = [v for v in comp if self.result.in_degree(v) == 0]
+            roots = list(all_roots & comp)
             assert len(roots) == 1
             root = roots[0]
-            root = remove_contract_rooted(self.result, all_leaves, root)
+            root = remove_contract_rooted(graph, all_leaves, root)
             assert root is not None
-            tree_nodes = set(nx.descendants(self.result, root)) | {root}
-            tree = self.result.subgraph(tree_nodes)
+            tree_nodes = set(nx.descendants(graph, root)) | {root}
+            tree = graph.subgraph(tree_nodes)
             out_trees.append(tree.copy())
-        write_output(out_trees)
+        return out_trees
+
+    def exit(self, signum, frame):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        # TODO: Uncomment following line
+        # out_trees = self.prepare_solution(self.result)
+        write_output(self.out_trees)
         sys.exit(0)
 
 
@@ -230,7 +237,7 @@ def read_input(f) -> tuple[nx.DiGraph, nx.DiGraph, set]:
             n_pending_trees -= 1
             if n_pending_trees == 0:
                 break
-    
+
     return trees, n_leaves
 
 # https://stackoverflow.com/a/57393072/9939883
