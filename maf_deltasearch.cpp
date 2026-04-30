@@ -487,7 +487,7 @@ struct GraphSeeker {
 
     GraphSeeker(const PhyloTree& t1, const PhyloTree& t2, int nl)
         : T1(t1), T2(t2), n_leaves(nl), forest(t1),
-          best_score(forest.score()), rng(std::random_device{}())
+          best_score(forest.score()), rng(42)
     { scratch.init(t1.n_nodes, t1.n_leaves); }
 
     void run() {
@@ -495,7 +495,7 @@ struct GraphSeeker {
         std::iota(c.begin(),c.end(),0);
         std::shuffle(c.begin(),c.end(),rng);
 
-        while (true) {
+        for(int l=0;l < 2;++l) {
             forest.reset();
             int cur=forest.score(), n=1;
 
