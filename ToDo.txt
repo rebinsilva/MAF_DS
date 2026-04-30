@@ -1,0 +1,54 @@
+MAF DeltaSearch: Debug Investigation
+=====================================
+
+BUG: agreement_check returns FALSE for valid 2-edge cherry batches in some passes
+----------------------------------------------------------------------------------
+
+Test case:
+  T1: (((1,2),(3,4)),(5,6));
+  T2: (((1,3),(2,4)),(5,6));
+  Input file: /tmp/test6.txt (PACE format with "# p 2 6" header)
+
+Known facts:
+  - Agreement check is CORRECT for isolated 2-edge pairs (verified by debug):
+      [0,1] = (7→1, 7→2) = cherry(1,2): score=-5, agree=TRUE
+      [2,3] = (8→3, 8→4) = cherry(3,4): score=-5, agree=TRUE
+      [6,7] = (10→5, 10→6) = cherry(5,6): score=-5, agree=TRUE
+  - T1 edges: [0]=7→1, [1]=7→2, [2]=8→3, [3]=8→4, [4]=9→7,
+              [5]=9→8, [6]=10→5, [7]=10→6, [8]=11→9, [9]=11→10
+  - Single edges never improve score from -6 (internal→leaf merges don't
+    reduce n_leaf_comps since the internal node starts with leaf_cnt=0)
+
+Observed symptom:
+  - In many passes, cherry pairs DO appear in the same n=2 (5-edge) slice
+    but agreement_check returns FALSE even though a cherry is present.
+  - Example (pass 2 from debug output):
+      n=2 i=1 edges=[3,1,2,9,0] score=-4 agree=0
+      n=2 i=0 edges=[4,5,8,6,7] score=-5 agree=0
+      n=4 i=1 edges=[6,7,3]     score=-5 agree=0  ← cherry(5,6) + edge2!
+  - Even when cherry(5,6) is isolated to [6,7] at n=4 level it returns FALSE.
+
+Hypothesis:
+  agreement_check step 3b scans T2 WCCs by iterating v=1..n_nodes checking
+  sc.t2.alive[v] && sc.t2.par[v]==NULL_NODE. The DFS traversal in 3b does NOT
+  check sc.t2.alive[u] when following ch[] links. Dead nodes from previous
+  t1_root iterations are still reachable via ch[] and may corrupt found_s counts
+  or cause incorrect partial-overlap detection (found_s < s_size → return false).
+
+Key suspect: step 3b partial-overlap check
+  The inner DFS follows sc.t2.ch[] without checking alive[]. After consuming
+  t1_root=1 (leaf singleton), sc.t2 marks leaf1=dead but T2's ancestor chain
+  still has intact ch[] links. When processing t1_root=parent_56 (S={5,6}),
+  the DFS from T2_root traverses dead nodes. Dead leaves (1,2,3,4) could be
+  miscounted or cause an early false return if found_s unexpectedly < s_size.
+
+Debug approach:
+  1. Compile with: g++ -O2 -std=c++17 -DDEBUG_AGREEMENT -DSINGLE_PASS
+  2. Run: ./maf_debug < /tmp/test6.txt
+  3. The debug code prints each slice's edges, score, and agree result for
+     the first 5 passes at n<=4. Inspect cases where cherry pair is in the
+     slice but agree=0.
+  4. Add alive[] check to the DFS in step 3b and re-test.
+
+Debug code already in maf_deltasearch.cpp (guarded by #ifdef DEBUG_AGREEMENT
+and #ifdef SINGLE_PASS — remove both guards when done).
