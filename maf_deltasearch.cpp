@@ -319,9 +319,8 @@ struct AgreementScratch {
     std::unique_ptr<bool[]> keep_buf, in_s_buf;
     bool *keep=nullptr, *in_s=nullptr;
     std::vector<int> dfs, roots, pre, stk;
-    struct HF { int v; bool visited; };
-    std::vector<HF>       hw;
-    std::vector<uint64_t> ho;
+    std::vector<int> ml1, ml2;                 // min leaf ID under each node in t1 / t2r
+    std::vector<std::pair<int,int>> cmp_stk;   // scratch for trees_equal
 
     void init(int nn, int nl) {
         keep_buf=std::make_unique<bool[]>(nn+1); keep=keep_buf.get();
@@ -329,42 +328,60 @@ struct AgreementScratch {
         in_s_buf=std::make_unique<bool[]>(nl+1); in_s=in_s_buf.get();
         std::fill(in_s,in_s+nl+1,false);
         dfs.reserve(nn); roots.reserve(nn); pre.reserve(nn); stk.reserve(nn);
-        hw.reserve(nn); ho.reserve(nn);
+        ml1.resize(nn+1); ml2.resize(nn+1); cmp_stk.reserve(nn);
     }
 };
 
 
-// FNV-1a based subtree hash; children sorted by hash → canonical across T1 and T2.
-static constexpr uint64_t FNV_P = 1099511628211ULL;
-static constexpr uint64_t FNV_O = 14695981039346656037ULL;
-static constexpr uint64_t H_INT = 0xdeadbeefcafe1234ULL;
-
-static uint64_t hmix(uint64_t a, uint64_t b) noexcept {
-    return a ^ (b + 0x9e3779b97f4a7c15ULL + (a<<6) + (a>>2));
-}
-
-static uint64_t subtree_hash(const MutableTree& t, int root,
-                              std::vector<AgreementScratch::HF>& work,
-                              std::vector<uint64_t>& out) {
-    work.clear(); out.clear(); work.reserve(t.n_nodes);
-    work.push_back({root,false});
-    while (!work.empty()) {
-        auto [v,vis] = work.back();
-        if (t.is_leaf(v)) { out.push_back((FNV_O^(uint64_t)v)*FNV_P); work.pop_back(); continue; }
-        int c0=t.ch[v][0], c1=t.ch[v][1];
-        if (!vis) { work.back().visited=true; if(c1!=NULL_NODE)work.push_back({c1,false}); if(c0!=NULL_NODE)work.push_back({c0,false}); }
-        else {
-            work.pop_back();
-            uint64_t h;
-            if ((c0!=NULL_NODE)+(c1!=NULL_NODE)==2) {
-                uint64_t hb=out.back();out.pop_back(); uint64_t ha=out.back();out.pop_back();
-                if (ha>hb) std::swap(ha,hb);
-                h=hmix(hmix(FNV_O,ha),hb);
-            } else { uint64_t hc=out.back();out.pop_back(); h=hmix(FNV_O,hc); }
-            out.push_back(hmix(h,H_INT));
+// Compute min leaf ID in the subtree rooted at each node.
+// Uses negative encoding on stk: push v to pre-visit, pop -v for post-visit.
+static void compute_min_leaf(const MutableTree& t, int root,
+                              std::vector<int>& stk, std::vector<int>& ml) {
+    stk.clear(); stk.push_back(root);
+    while (!stk.empty()) {
+        int v = stk.back();
+        if (v < 0) {
+            stk.pop_back(); v = -v;
+            int c0=t.ch[v][0], c1=t.ch[v][1];
+            ml[v] = std::numeric_limits<int>::max();
+            if (c0!=NULL_NODE) ml[v]=std::min(ml[v], ml[c0]);
+            if (c1!=NULL_NODE) ml[v]=std::min(ml[v], ml[c1]);
+        } else if (t.is_leaf(v)) {
+            stk.pop_back(); ml[v]=v;
+        } else {
+            stk.back()=-v;
+            int c0=t.ch[v][0], c1=t.ch[v][1];
+            if (c1!=NULL_NODE) stk.push_back(c1);
+            if (c0!=NULL_NODE) stk.push_back(c0);
         }
     }
-    return out.front();
+}
+
+// Compare two rooted trees structurally: at each internal node, orient both
+// children by min_leaf (smaller goes left) then recurse pair-wise.
+static bool trees_equal(const MutableTree& t1, int r1,
+                         const MutableTree& t2, int r2,
+                         const std::vector<int>& ml1, const std::vector<int>& ml2,
+                         std::vector<std::pair<int,int>>& stk) {
+    stk.clear(); stk.push_back({r1,r2});
+    while (!stk.empty()) {
+        auto [v1,v2] = stk.back(); stk.pop_back();
+        bool l1=t1.is_leaf(v1), l2=t2.is_leaf(v2);
+        if (l1!=l2) return false;
+        if (l1) { if (v1!=v2) return false; continue; }
+        int a=t1.ch[v1][0], b=t1.ch[v1][1];
+        int c=t2.ch[v2][0], d=t2.ch[v2][1];
+        int d1=(a!=NULL_NODE)+(b!=NULL_NODE), d2=(c!=NULL_NODE)+(d!=NULL_NODE);
+        if (d1!=d2) return false;
+        if (d1==2) {
+            if (ml1[a]>ml1[b]) std::swap(a,b);
+            if (ml2[c]>ml2[d]) std::swap(c,d);
+            stk.push_back({b,d}); stk.push_back({a,c});
+        } else {
+            stk.push_back({a!=NULL_NODE?a:b, c!=NULL_NODE?c:d});
+        }
+    }
+    return true;
 }
 
 
@@ -423,11 +440,12 @@ static bool agreement_check(const MutableForest& forest, const PhyloTree& T2,
             if (sc.t2r.ch[u][1]!=NULL_NODE) sc.dfs.push_back(sc.t2r.ch[u][1]);
         }
 
-        // 3d: contract pruned T2 subtree, then compare hashes.
+        // 3d: contract pruned T2 subtree, then compare topology via min-leaf ordering.
         int cr=prune_tree(sc.t2r, sc.in_s, nwr, sc.pre, sc.stk, true);
         assert(cr!=NULL_NODE);
-        if (subtree_hash(sc.t1,  t1r, sc.hw, sc.ho) !=
-            subtree_hash(sc.t2r, cr,  sc.hw, sc.ho)) return false;
+        compute_min_leaf(sc.t1,  t1r, sc.stk, sc.ml1);
+        compute_min_leaf(sc.t2r, cr,  sc.stk, sc.ml2);
+        if (!trees_equal(sc.t1, t1r, sc.t2r, cr, sc.ml1, sc.ml2, sc.cmp_stk)) return false;
 
         std::fill(sc.in_s, sc.in_s+nl+1, false);
     }
