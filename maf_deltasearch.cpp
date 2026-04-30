@@ -428,7 +428,7 @@ static bool agreement_check(const MutableForest& forest, const PhyloTree& T2,
     sc.t2.refill_from(T2);
 
     for (int t1r : sc.roots) {
-        // 3a: collect leaf set S from this T1 component.
+        // collect leaf set S from this T1 component.
         int ss=0;
         sc.dfs.push_back(t1r);
         while (!sc.dfs.empty()) {
@@ -438,7 +438,7 @@ static bool agreement_check(const MutableForest& forest, const PhyloTree& T2,
             if (sc.t1.ch[v][1]!=NULL_NODE) sc.dfs.push_back(sc.t1.ch[v][1]);
         }
 
-        // 3b: find the T2 WCC containing all of S; partial overlap → false.
+        // find the T2 WCC containing all of S; partial overlap → false.
         int wr=NULL_NODE;
         for (int v=1; v<=nn && wr==NULL_NODE; ++v) {
             if (!sc.t2.alive[v] || sc.t2.par[v]!=NULL_NODE) continue;
@@ -457,7 +457,7 @@ static bool agreement_check(const MutableForest& forest, const PhyloTree& T2,
         }
         if (wr==NULL_NODE) return false;
 
-        // 3c: prune T2 WCC to S.
+        // prune T2 WCC to S.
         sc.t2r.copy_from(sc.t2);
         int nwr=prune_tree(sc.t2r, sc.in_s, wr, sc.pre, sc.stk, false);
 
@@ -470,7 +470,7 @@ static bool agreement_check(const MutableForest& forest, const PhyloTree& T2,
             if (sc.t2r.ch[u][1]!=NULL_NODE) sc.dfs.push_back(sc.t2r.ch[u][1]);
         }
 
-        // 3d: contract pruned T2 subtree, then compare topology via min-leaf ordering.
+        // contract pruned T2 subtree, then compare topology via min-leaf ordering.
         int cr=prune_tree(sc.t2r, sc.in_s, nwr, sc.pre, sc.stk, true);
         assert(cr!=NULL_NODE);
         compute_min_leaf(sc.t1,  t1r, sc.stk, sc.ml1);
@@ -506,7 +506,6 @@ volatile sig_atomic_t g_stop = 0;
 static void handle_signal(int) { g_stop=1; }
 
 
-// DeltaSearch outer loop: shuffles T1 edges, commits batches via doubling bisection.
 struct GraphSeeker {
     const PhyloTree& T1; const PhyloTree& T2; int n_leaves;
     MutableForest    forest;
