@@ -312,6 +312,35 @@ static void write_forest(const std::vector<std::pair<MutableTree,int>>& f) {
     std::cout<<'\n';
 }
 
+#ifdef DEBUG_DRAW
+static void draw_node(const std::vector<std::array<int,2>>& ch, int nl,
+                      int v, const std::string& pre, bool last) {
+    std::cerr << pre << (last ? "└─ " : "├─ ") << v;
+    if (v>=1 && v<=nl) std::cerr << " (leaf)";
+    std::cerr << '\n';
+    int c0=ch[v][0], c1=ch[v][1];
+    std::string np = pre + (last ? "   " : "│  ");
+    if (c0!=NULL_NODE) draw_node(ch, nl, c0, np, c1==NULL_NODE);
+    if (c1!=NULL_NODE) draw_node(ch, nl, c1, np, true);
+}
+
+static void draw_phylo(const char* label, const PhyloTree& t) {
+    std::cerr << label << ":\n";
+    draw_node(t.ch, t.n_leaves, t.root, "  ", true);
+    std::cerr << '\n';
+}
+
+static void draw_forest_debug(const char* label, const MutableForest& f) {
+    std::cerr << label << ":\n";
+    int nl=f.src.n_leaves, nn=f.src.n_nodes;
+    for (int v=1; v<=nn; ++v) {
+        if (f.par[v]!=NULL_NODE) continue;
+        draw_node(f.ch, nl, v, "  ", true);
+    }
+    std::cerr << '\n';
+}
+#endif
+
 
 // Persistent scratch buffers for agreement_check — allocated once, reused every call.
 struct AgreementScratch {
@@ -417,6 +446,7 @@ static bool agreement_check(const MutableForest& forest, const PhyloTree& T2,
             sc.dfs.push_back(v);
             while (!sc.dfs.empty()) {
                 int u=sc.dfs.back(); sc.dfs.pop_back();
+                if (!sc.t2.alive[u]) continue;
                 if (sc.t2.is_leaf(u) && sc.in_s[u]) ++fs;
                 if (sc.t2.ch[u][0]!=NULL_NODE) sc.dfs.push_back(sc.t2.ch[u][0]);
                 if (sc.t2.ch[u][1]!=NULL_NODE) sc.dfs.push_back(sc.t2.ch[u][1]);
@@ -487,7 +517,7 @@ struct GraphSeeker {
 
     GraphSeeker(const PhyloTree& t1, const PhyloTree& t2, int nl)
         : T1(t1), T2(t2), n_leaves(nl), forest(t1),
-          best_score(forest.score()), rng(42)
+          best_score(forest.score()), rng(RAND)
     { scratch.init(t1.n_nodes, t1.n_leaves); }
 
     void run() {
@@ -495,7 +525,13 @@ struct GraphSeeker {
         std::iota(c.begin(),c.end(),0);
         std::shuffle(c.begin(),c.end(),rng);
 
-        for(int l=0;l < 2;++l) {
+        for(auto i: c)
+        {
+            auto [x, y] = forest.src.edges[i];
+            std::cout<<"(" << x <<", "<<y<<"), ";
+        }
+        std::cout<<std::endl;
+        for(int l=0;l < 1;++l) {
             forest.reset();
             int cur=forest.score(), n=1;
 
@@ -515,6 +551,12 @@ struct GraphSeeker {
                         if (ts>cur) {
                             cur=ts; c.erase(c.begin()+lo,c.begin()+hi);
                             if (cur>best_score) { best_score=cur; best_output=prepare_solution(forest); }
+#ifdef DEBUG_DRAW
+                            std::cerr << "=== committed slice [" << lo << "," << hi
+                                      << ") score=" << ts << " ===\n";
+                            draw_forest_debug("T1_forest", forest);
+                            draw_phylo("T2", T2);
+#endif
                             continue;
                         }
                     }
