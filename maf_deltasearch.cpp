@@ -525,13 +525,15 @@ struct GraphSeeker {
         std::iota(c.begin(),c.end(),0);
         std::shuffle(c.begin(),c.end(),rng);
 
+#ifdef DEBUG_DRAW
         for(auto i: c)
         {
             auto [x, y] = forest.src.edges[i];
             std::cout<<"(" << x <<", "<<y<<"), ";
         }
         std::cout<<std::endl;
-        for(int l=0;l < 1;++l) {
+#endif
+        while(true) {
             forest.reset();
             int cur=forest.score(), n=1;
 
