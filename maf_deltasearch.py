@@ -7,7 +7,7 @@ import signal
 import sys
 
 import networkx as nx
-from Bio import Phylo
+
 
 def remove_rooted(T: nx.DiGraph, leaves: frozenset, node) -> list[int]:
     if node in leaves:
@@ -221,17 +221,7 @@ def read_input(f) -> tuple[nx.DiGraph, nx.DiGraph, set]:
             assert newick_data.endswith(';'), "Newick string must end with ';'"
             # newick_data = newick_data[:-1]  + "0" + newick_data[-1]
             # print(newick_data)
-            tree = Phylo.read(io.StringIO(newick_data), "newick", rooted=True)
-            tree = Phylo.to_networkx(tree)
-            count = -1
-            mapping = dict()
-            for node in tree.nodes():
-                if node.name:
-                    mapping[node] = int(node.name)
-                else:
-                    mapping[node] = count
-                    count -= 1
-            tree = nx.relabel_nodes(tree, mapping)
+            tree = parse_newick_to_digraph(newick_data)
             assert tree.is_directed(), "Input trees must be directed graphs"
             trees.append(tree)
             n_pending_trees -= 1
@@ -263,6 +253,48 @@ def write_output(trees: list[nx.Graph]) -> None:
         result.append(newick_string)
     print('\n'.join(result))
 
+def parse_newick_to_digraph(newick_str: str) -> nx.DiGraph:
+    newick_str = newick_str.strip().rstrip(";")
+
+    G = nx.DiGraph()
+    stack = []
+    node_id = -1
+    current_parent = None
+    token = ""
+
+    def new_internal():
+        nonlocal node_id
+        node = node_id
+        node_id -= 1
+        G.add_node(node)
+        return node
+
+    for char in newick_str:
+        if char == "(":
+            node = new_internal()
+            if current_parent is not None:
+                G.add_edge(current_parent, node)
+            stack.append(current_parent)
+            current_parent = node
+        elif char == ",":
+            if token.strip():
+                leaf = int(token.strip())
+                G.add_node(leaf)
+                G.add_edge(current_parent, leaf)
+                token = ""
+        elif char == ")":
+            if token.strip():
+                leaf = int(token.strip())
+                G.add_node(leaf)
+                G.add_edge(current_parent, leaf)
+                token = ""
+            current_parent = stack.pop()
+        elif char in " \t\n\r":
+            continue
+        else:
+            token += char
+
+    return G
 
 if __name__ == '__main__':
     random.seed(42)
