@@ -866,7 +866,23 @@ def remove_rooted(T: nx.DiGraph, leaves: frozenset, node) -> list[int]:
                 T.remove_node(node)
                 node = child
     return node
+def canonical_tree_signature(T: nx.DiGraph, root=None):
+    if root is None:
+        roots = [node for node in T.nodes if T.in_degree(node) == 0]
+        assert len(roots) == 1, f"Expected one root, found {roots}"
+        root = roots[0]
 
+    children = list(T.successors(root))
+    if not children:
+        return str(root)
+
+    child_signatures = [canonical_tree_signature(T, child) for child in children]
+    child_signatures.sort()
+    return "(" + ",".join(child_signatures) + ")"
+
+
+def compare_trees(T1: nx.DiGraph, T2: nx.DiGraph) -> bool:
+    return canonical_tree_signature(T1) == canonical_tree_signature(T2)
 def remove_contract_rooted(T: nx.DiGraph, leaves: frozenset, node) -> int:
     if node in leaves:
         assert node in T
