@@ -37,24 +37,6 @@ def create_empty_copy(G):
     H.graph.update(G.graph)
     return H
 
-def frozen(*args, **kwargs):
-    raise NetworkXError("Frozen graph can't be modified")
-
-def freeze(G):
-    G.add_node = frozen
-    G.add_nodes_from = frozen
-    G.remove_node = frozen
-    G.remove_nodes_from = frozen
-    G.add_edge = frozen
-    G.add_edges_from = frozen
-    G.add_weighted_edges_from = frozen
-    G.remove_edge = frozen
-    G.remove_edges_from = frozen
-    G.clear = frozen
-    G.clear_edges = frozen
-    G.frozen = True
-    return G
-
 def bfs_edges(G, source):
     neighbors = G.neighbors
     depth_limit = len(G)
@@ -81,6 +63,18 @@ def all_leaves_tree(G, source):
         yield source
     for v in G._succ[source]:
         yield from all_leaves_tree(G, v)
+
+def delete_subtree(G, source):
+    children = list(G._succ[source])
+    G.remove_node(source)
+    for v in children:
+        delete_subtree(G, v)
+
+def delete_subtree_edges(G, source):
+    children = list(G._succ[source])
+    for v in children:
+        G.remove_edge(source, v)
+        delete_subtree_edges(G, v)
 
 class DiDegreeView:
     def __init__(self, G, nbunch=None, weight=None):
@@ -743,10 +737,6 @@ class DiGraph:
         self._pred[v][u] = datadict
         _clear_cache(self)
 
-
-
-
-    
     def add_edges_from(self, ebunch_to_add, **attr):
         for e in ebunch_to_add:
             ne = len(e)
@@ -785,9 +775,6 @@ class DiGraph:
             raise NetworkXError(f"The edge {u}-{v} not in graph.") from err
         _clear_cache(self)
 
-
-
-
     
     def remove_edges_from(self, ebunch):
         for e in ebunch:
@@ -811,9 +798,6 @@ class DiGraph:
         except KeyError as err:
             raise NetworkXError(f"The node {n} is not in the digraph.") from err
 
-
-
-    
 # digraph definitions
     neighbors = successors
 
@@ -854,61 +838,6 @@ class DiGraph:
         return OutDegreeView(self)
 
     
-    def clear(self):
-        self._succ.clear()
-        self._pred.clear()
-        self._node.clear()
-        self.graph.clear()
-        _clear_cache(self)
-
-    def clear_edges(self):
-        for predecessor_dict in self._pred.values():
-            predecessor_dict.clear()
-        for successor_dict in self._succ.values():
-            successor_dict.clear()
-        _clear_cache(self)
-
-
-
-    
-    def is_multigraph(self):
-        return False
-
-    def is_directed(self):
-        return True
-
-    def to_undirected(self, reciprocal=False, as_view=False):
-        graph_class = self.to_undirected_class()
-        if as_view is True:
-            return nx.graphviews.generic_graph_view(self, graph_class)
-        # deepcopy when not a view
-        G = graph_class()
-        G.graph.update(deepcopy(self.graph))
-        G.add_nodes_from((n, deepcopy(d)) for n, d in self._node.items())
-        if reciprocal is True:
-            G.add_edges_from(
-                (u, v, deepcopy(d))
-                for u, nbrs in self._adj.items()
-                for v, d in nbrs.items()
-                if v in self._pred[u]
-            )
-        else:
-            G.add_edges_from(
-                (u, v, deepcopy(d))
-                for u, nbrs in self._adj.items()
-                for v, d in nbrs.items()
-            )
-        return G
-    
-    def reverse(self, copy=True):
-        if copy:
-            H = self.__class__()
-            H.graph.update(deepcopy(self.graph))
-            H.add_nodes_from((n, deepcopy(d)) for n, d in self.nodes.items())
-            H.add_edges_from((v, u, deepcopy(d)) for u, v, d in self.edges(data=True))
-            return H
-        return nx.reverse_view(self)
-
 def remove_rooted(T: nx.DiGraph, leaves: frozenset, node) -> list[int]:
     if node in leaves:
         return node
@@ -942,9 +871,9 @@ def remove_contract_rooted(T: nx.DiGraph, leaves: frozenset, node) -> int:
         if preds:
             T.add_edge(preds[0], child)
         T.remove_node(node)
-        assert child in T
+        # assert child in T
         return child
-    assert node in T
+    # assert node in T
     return node
 
 
@@ -956,6 +885,10 @@ class NumComponentSpec:
         score =  -len([comp for comp in weakly_connected_components(graph) if comp & self._all_leaves])
         return score
 
+def find_root(graph, node):
+    while graph.in_degree(node) == 1:
+        node = next(iter(graph.predecessors(node)))
+    return node
 class AgreementSpec:
 
     def __init__(self, graph: nx.DiGraph, T2: nx.DiGraph, all_leaves: frozenset):
@@ -990,6 +923,7 @@ class AgreementSpec:
             else:
                 return -float("inf")
 
+            # T2_root = find_root(T2, next(iter(chosen_comp)))
             for v in chosen_comp:
                 if T2.in_degree(v) == 0:
                     T2_root = v
@@ -999,13 +933,16 @@ class AgreementSpec:
             T2_removed = T2.copy()
             T2_root = remove_rooted(T2_removed, S, T2_root)
             T2.remove_edges_from(bfs_edges(T2_removed, T2_root))
+            delete_subtree_edges(T2, T2_root) # Analyse why delete_subtree doesn't work here
             # for edge in bfs_edges(T2_removed, T2_root):
             #     T2.remove_edge(*edge)
             T2_root = remove_contract_rooted(T2_removed, S, T2_root)
 
             if tree_to_newick(T1_contracted, root=T1_root) != tree_to_newick(T2_removed, root=T2_root):
                 return -float("inf")
-
+            
+            # delete_subtree_edges(T2, T2_root) # Analyse why delete_subtree doesn't work here
+            
 
         return 0.0
 
@@ -1016,7 +953,7 @@ class AgreementSpec:
 
 class GraphSeeker:
     def __init__(self, graph: nx.DiGraph, leaves: frozenset[int], score:Callable[[nx.DiGraph], float], validity:Callable[[nx.DiGraph], bool]):
-        self.graph = freeze(graph)
+        self.graph = graph
         self.leaves = leaves
 
         self.score = score
@@ -1123,7 +1060,6 @@ def read_input(f) -> tuple[nx.DiGraph, nx.DiGraph, set]:
             # newick_data = newick_data[:-1]  + "0" + newick_data[-1]
             # print(newick_data)
             tree = parse_newick_to_digraph(newick_data)
-            assert tree.is_directed(), "Input trees must be directed graphs"
             trees.append(tree)
             n_pending_trees -= 1
             if n_pending_trees == 0:
@@ -1146,6 +1082,28 @@ def tree_to_newick(g, root=None):
         else:
             subgs.append(str(child))
     return "(" + ','.join(subgs) + ")"
+
+def tree_to_newick_list(g, result, root=None):
+    if root is None:
+        roots = list(filter(lambda p: p[1] == 0, g.in_degree()))
+        assert 1 == len(roots)
+        root = roots[0][0]
+    if len(g[root]) == 0:
+        result.append(str(root))
+        # return str(root)
+        return
+    
+    result.append("(")
+    for child in sorted(g[root]):
+        tree_to_newick_list(g, result, root=child)
+        result.append(',')
+    result[-1] = ')' # replace last comma with closing parenthesis
+    return
+
+def tree_to_newick2(g, root=None):
+    result = []
+    tree_to_newick_list(g, result, root=root)
+    return ''.join(result)
 
 def write_output(trees: list[str]) -> None:
     result = []
