@@ -894,7 +894,6 @@ class NumComponentSpec:
         self._all_leaves = all_leaves
 
     def __call__(self, graph:nx.DiGraph) -> float:
-        # score =  -len([comp for comp in weakly_connected_components(graph) if comp & self._all_leaves])
         score = -len({find_root(graph, leaf) for leaf in self._all_leaves})
         return score
 
@@ -909,7 +908,6 @@ class AgreementSpec:
         self._all_leaves = all_leaves
 
     def __call__(self, graph:nx.DiGraph) -> float:
-        # print("AGREEMENT", graph)
         roots = [v for v in graph.nodes if graph.in_degree(v) == 0]
         nxt_roots = set()
         T1_contracted = graph.copy()
@@ -921,8 +919,6 @@ class AgreementSpec:
         T2 = self._T2.copy()
         for T1_root in T1_roots:
 
-            # TODO: Simplify to make this faster
-            # T1_component = all_vertex_component(T1_contracted, T1_root)
             T1_leaves = set(all_leaves_tree(T1_contracted, T1_root))
             leaf = next(iter(T1_leaves))
             T2_root = find_root(T2, leaf)
@@ -931,38 +927,13 @@ class AgreementSpec:
             if not (T2_leaves >= T1_leaves):
                 return False, None
 
-            # S = frozenset(T1_leaves & self._all_leaves)
-            # for comp in weakly_connected_components(T2):
-            #     if S & comp:
-            #         if comp >= S:
-            #             chosen_comp = comp
-            #             break
-            #         else:
-            #             return -float("inf")
-            # else:
-            #     return -float("inf")
-
-            # T2_root = find_root(T2, next(iter(chosen_comp)))
-            # for v in chosen_comp:
-            #     if T2.in_degree(v) == 0:
-            #         T2_root = v
-            #         break
-            # else:
-            #     raise ValueError("No root found in T2 for component containing S")
             T2_removed = T2.copy()
-            # T2_root = remove_rooted(T2_removed, S, T2_root)
-            # T2.remove_edges_from(bfs_edges(T2_removed, T2_root))
-            # delete_subtree(T2, S, T2_root)
-            # delete_subtree_edges(T2, S, T2_root) # Analyse why delete_subtree doesn't work here
-            # for edge in bfs_edges(T2_removed, T2_root):
-            #     T2.remove_edge(*edge)
             T2_root = remove_contract_rooted(T2_removed, T1_leaves, T2_root)
 
             if tree_to_newick(T1_contracted, root=T1_root) != tree_to_newick(T2_removed, root=T2_root):
                 return False, None
             
             delete_subtree(T2, T1_leaves, T2_root)
-            # delete_subtree_edges(T2, T2_root) # Analyse why delete_subtree doesn't work here
             
 
         return True, T1_contracted.copy()
