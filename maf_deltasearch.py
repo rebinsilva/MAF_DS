@@ -904,7 +904,7 @@ def find_root(graph, node):
     return node
 class AgreementSpec:
 
-    def __init__(self, graph: nx.DiGraph, T2: nx.DiGraph, all_leaves: frozenset):
+    def __init__(self, T2: nx.DiGraph, all_leaves: frozenset):
         self._T2 = T2
         self._all_leaves = all_leaves
 
@@ -929,7 +929,7 @@ class AgreementSpec:
             T2_leaves = set(all_leaves_tree(T2, T2_root))
 
             if not (T2_leaves >= T1_leaves):
-                return -float("inf")
+                return False, None
 
             # S = frozenset(T1_leaves & self._all_leaves)
             # for comp in weakly_connected_components(T2):
@@ -959,13 +959,13 @@ class AgreementSpec:
             T2_root = remove_contract_rooted(T2_removed, T1_leaves, T2_root)
 
             if tree_to_newick(T1_contracted, root=T1_root) != tree_to_newick(T2_removed, root=T2_root):
-                return -float("inf")
+                return False, None
             
             delete_subtree(T2, T1_leaves, T2_root)
             # delete_subtree_edges(T2, T2_root) # Analyse why delete_subtree doesn't work here
             
 
-        return 0.0
+        return True, T1_contracted.copy()
 
 
 # ---------------------------------------------------------------------------
@@ -1004,14 +1004,15 @@ class GraphSeeker:
                     tst_subset = c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
                     cs = cur_soln + tst_subset
                     cur_graph.add_edges_from(tst_subset)
-                    if self.valid(cur_graph):
+                    agreement, contracted_graph = self.valid(cur_graph)
+                    if agreement:
                         tst_score = self.score(cur_graph)
                         if tst_score > cur_score:
                             cur_score = tst_score
                             cur_soln = cs
                             del c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
                             if cur_score > self.best_score:
-                                self.result = cur_graph
+                                self.result = contracted_graph
                                 self.best_score = cur_score
                                 # self.print = self.prepare_solution(self.result)
                                 continue
@@ -1027,11 +1028,11 @@ class GraphSeeker:
         for leaf in self.leaves:
             if leaf not in visited:
                 root = find_root(graph, leaf)
-                root = remove_contract_rooted(graph, self.leaves, root)
-                out_tree = tree_to_newick(graph, root=root)
+                # root = remove_contract_rooted(graph, self.leaves, root)
+                out_tree = tree_to_newick_print(graph, root=root)
                 visited.update(all_leaves_tree(graph, root))
                 out_trees.append(out_tree)        
-        return ";\n".join(out_trees)+";"
+        return "\n".join(out_trees)
 
 
         all_leaves = self.leaves
@@ -1119,27 +1120,23 @@ def _tree_to_newick(g, root=None):
     myid = min(x[1] for x in subgs)
     return ("(" + ','.join(x[0] for x in subgs) + ")", myid)
 
-def tree_to_newick_list(g, result, root=None):
-    if root is None:
-        roots = list(filter(lambda p: p[1] == 0, g.in_degree()))
-        assert 1 == len(roots)
-        root = roots[0][0]
+def tree_to_newick_list(g, result, root):
     if len(g[root]) == 0:
         result.append(str(root))
         # return str(root)
         return root
     
     result.append("(")
-    representative = float('inf')
     for child in g[root]:
-        representative = min(representative, tree_to_newick_list(g, result, root=child))
+        tree_to_newick_list(g, result, root=child)
         result.append(',')
     result[-1] = ')' # replace last comma with closing parenthesis
     return
 
-def tree_to_newick2(g, root=None):
+def tree_to_newick_print(g, root):
     result = []
     tree_to_newick_list(g, result, root=root)
+    result.append(';')
     return ''.join(result)
 
 def write_output(trees: list[str]) -> None:
@@ -1199,6 +1196,6 @@ if __name__ == '__main__':
     T1, T2 = trees[0], trees[1]
 
     seeker = GraphSeeker(
-        T1, leaves, NumComponentSpec(T1, leaves), lambda g: AgreementSpec(g, T2, leaves)(g) > -float("inf")
+        T1, leaves, NumComponentSpec(T1, leaves), AgreementSpec(T2, leaves)
     )
     seeker.run()
