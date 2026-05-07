@@ -64,17 +64,29 @@ def all_leaves_tree(G, source):
     for v in G._succ[source]:
         yield from all_leaves_tree(G, v)
 
-def delete_subtree(G, source):
+def delete_subtree(G, leaves, source):
+    if source in leaves:
+        G.remove_node(source)
+        return True
     children = list(G._succ[source])
-    G.remove_node(source)
+    flag = False
     for v in children:
-        delete_subtree(G, v)
+        if delete_subtree(G, leaves, v):
+            flag = True
+    if flag:
+        G.remove_node(source)
+    return flag
 
-def delete_subtree_edges(G, source):
+def delete_subtree_edges(G, leaves, source):
+    if source in leaves:
+        return True
     children = list(G._succ[source])
+    flag = False
     for v in children:
-        G.remove_edge(source, v)
-        delete_subtree_edges(G, v)
+        if delete_subtree_edges(G, leaves, v):
+            G.remove_edge(source, v)
+            flag = True
+    return flag
 
 class DiDegreeView:
     def __init__(self, G, nbunch=None, weight=None):
@@ -903,7 +915,6 @@ class AgreementSpec:
         for root in roots:
             root = remove_contract_rooted(T1_contracted, self._all_leaves, root)
             if root is not None:
-                assert root in T1_contracted
                 nxt_roots.add(root)
         T1_roots = nxt_roots
         T2 = self._T2.copy()
@@ -923,17 +934,18 @@ class AgreementSpec:
             else:
                 return -float("inf")
 
-            # T2_root = find_root(T2, next(iter(chosen_comp)))
-            for v in chosen_comp:
-                if T2.in_degree(v) == 0:
-                    T2_root = v
-                    break
-            else:
-                raise ValueError("No root found in T2 for component containing S")
+            T2_root = find_root(T2, next(iter(chosen_comp)))
+            # for v in chosen_comp:
+            #     if T2.in_degree(v) == 0:
+            #         T2_root = v
+            #         break
+            # else:
+            #     raise ValueError("No root found in T2 for component containing S")
             T2_removed = T2.copy()
-            T2_root = remove_rooted(T2_removed, S, T2_root)
-            T2.remove_edges_from(bfs_edges(T2_removed, T2_root))
-            delete_subtree_edges(T2, T2_root) # Analyse why delete_subtree doesn't work here
+            # T2_root = remove_rooted(T2_removed, S, T2_root)
+            # T2.remove_edges_from(bfs_edges(T2_removed, T2_root))
+            # delete_subtree(T2, S, T2_root)
+            # delete_subtree_edges(T2, S, T2_root) # Analyse why delete_subtree doesn't work here
             # for edge in bfs_edges(T2_removed, T2_root):
             #     T2.remove_edge(*edge)
             T2_root = remove_contract_rooted(T2_removed, S, T2_root)
@@ -941,6 +953,7 @@ class AgreementSpec:
             if tree_to_newick(T1_contracted, root=T1_root) != tree_to_newick(T2_removed, root=T2_root):
                 return -float("inf")
             
+            delete_subtree(T2, S, T2_root)
             # delete_subtree_edges(T2, T2_root) # Analyse why delete_subtree doesn't work here
             
 
@@ -1068,7 +1081,7 @@ def read_input(f) -> tuple[nx.DiGraph, nx.DiGraph, set]:
     return trees, n_leaves
 
 # https://stackoverflow.com/a/57393072/9939883
-def tree_to_newick(g, root=None):
+def tree_to_newick_old(g, root=None):
     if root is None:
         roots = list(filter(lambda p: p[1] == 0, g.in_degree()))
         assert 1 == len(roots)
@@ -1100,7 +1113,7 @@ def tree_to_newick_list(g, result, root=None):
     result[-1] = ')' # replace last comma with closing parenthesis
     return
 
-def tree_to_newick2(g, root=None):
+def tree_to_newick(g, root=None):
     result = []
     tree_to_newick_list(g, result, root=root)
     return ''.join(result)
