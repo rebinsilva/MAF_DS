@@ -894,7 +894,8 @@ class NumComponentSpec:
         self._all_leaves = all_leaves
 
     def __call__(self, graph:nx.DiGraph) -> float:
-        score =  -len([comp for comp in weakly_connected_components(graph) if comp & self._all_leaves])
+        # score =  -len([comp for comp in weakly_connected_components(graph) if comp & self._all_leaves])
+        score = -len({find_root(graph, leaf) for leaf in self._all_leaves})
         return score
 
 def find_root(graph, node):
@@ -923,18 +924,25 @@ class AgreementSpec:
             # TODO: Simplify to make this faster
             # T1_component = all_vertex_component(T1_contracted, T1_root)
             T1_leaves = set(all_leaves_tree(T1_contracted, T1_root))
-            S = frozenset(T1_leaves & self._all_leaves)
-            for comp in weakly_connected_components(T2):
-                if S & comp:
-                    if comp >= S:
-                        chosen_comp = comp
-                        break
-                    else:
-                        return -float("inf")
-            else:
+            leaf = next(iter(T1_leaves))
+            T2_root = find_root(T2, leaf)
+            T2_leaves = set(all_leaves_tree(T2, T2_root))
+
+            if not (T2_leaves >= T1_leaves):
                 return -float("inf")
 
-            T2_root = find_root(T2, next(iter(chosen_comp)))
+            # S = frozenset(T1_leaves & self._all_leaves)
+            # for comp in weakly_connected_components(T2):
+            #     if S & comp:
+            #         if comp >= S:
+            #             chosen_comp = comp
+            #             break
+            #         else:
+            #             return -float("inf")
+            # else:
+            #     return -float("inf")
+
+            # T2_root = find_root(T2, next(iter(chosen_comp)))
             # for v in chosen_comp:
             #     if T2.in_degree(v) == 0:
             #         T2_root = v
@@ -948,12 +956,12 @@ class AgreementSpec:
             # delete_subtree_edges(T2, S, T2_root) # Analyse why delete_subtree doesn't work here
             # for edge in bfs_edges(T2_removed, T2_root):
             #     T2.remove_edge(*edge)
-            T2_root = remove_contract_rooted(T2_removed, S, T2_root)
+            T2_root = remove_contract_rooted(T2_removed, T1_leaves, T2_root)
 
             if tree_to_newick(T1_contracted, root=T1_root) != tree_to_newick(T2_removed, root=T2_root):
                 return -float("inf")
             
-            delete_subtree(T2, S, T2_root)
+            delete_subtree(T2, T1_leaves, T2_root)
             # delete_subtree_edges(T2, T2_root) # Analyse why delete_subtree doesn't work here
             
 
@@ -975,7 +983,7 @@ class GraphSeeker:
         self.result = create_empty_copy(self.graph)
         self.best_score = self.score(self.result)
         self.empty_score = self.best_score
-        self.print = self.prepare_solution(self.result)
+        # self.print = self.prepare_solution(self.result)
 
         # https://optil.io/optilion/help/signals
         signal.signal(signal.SIGINT, self.exit)
@@ -1005,7 +1013,7 @@ class GraphSeeker:
                             if cur_score > self.best_score:
                                 self.result = cur_graph
                                 self.best_score = cur_score
-                                self.print = self.prepare_solution(self.result)
+                                # self.print = self.prepare_solution(self.result)
                                 continue
                     cur_graph.remove_edges_from(tst_subset)
 
@@ -1014,6 +1022,18 @@ class GraphSeeker:
             random.shuffle(c)
 
     def prepare_solution(self, graph):
+        visited = set()
+        out_trees = []
+        for leaf in self.leaves:
+            if leaf not in visited:
+                root = find_root(graph, leaf)
+                root = remove_contract_rooted(graph, self.leaves, root)
+                out_tree = tree_to_newick(graph, root=root)
+                visited.update(all_leaves_tree(graph, root))
+                out_trees.append(out_tree)        
+        return ";\n".join(out_trees)+";"
+
+
         all_leaves = self.leaves
         out_trees = []
         all_roots = {v for v in graph.nodes() if graph.in_degree(v) == 0}
@@ -1034,7 +1054,7 @@ class GraphSeeker:
     def exit(self, signum, frame):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         # TODO: Uncomment following line
-        # out_trees = self.prepare_solution(self.result)
+        self.print = self.prepare_solution(self.result)
         print(self.print)
         sys.exit(0)
 
@@ -1081,20 +1101,23 @@ def read_input(f) -> tuple[nx.DiGraph, nx.DiGraph, set]:
     return trees, n_leaves
 
 # https://stackoverflow.com/a/57393072/9939883
-def tree_to_newick_old(g, root=None):
+def tree_to_newick(g, root=None):
+    newick_str, _ = _tree_to_newick(g, root=root)
+    return newick_str
+
+def _tree_to_newick(g, root=None):
     if root is None:
         roots = list(filter(lambda p: p[1] == 0, g.in_degree()))
         assert 1 == len(roots)
         root = roots[0][0]
     subgs = []
     if len(g[root]) == 0:
-        return str(root)
-    for child in sorted(g[root]):
-        if len(g[child]) > 0:
-            subgs.append(tree_to_newick(g, root=child))
-        else:
-            subgs.append(str(child))
-    return "(" + ','.join(subgs) + ")"
+        return (str(root), root)
+    for child in g[root]:
+        subgs.append(_tree_to_newick(g, root=child))
+    subgs.sort(key=lambda x: x[1])
+    myid = min(x[1] for x in subgs)
+    return ("(" + ','.join(x[0] for x in subgs) + ")", myid)
 
 def tree_to_newick_list(g, result, root=None):
     if root is None:
@@ -1104,16 +1127,17 @@ def tree_to_newick_list(g, result, root=None):
     if len(g[root]) == 0:
         result.append(str(root))
         # return str(root)
-        return
+        return root
     
     result.append("(")
-    for child in sorted(g[root]):
-        tree_to_newick_list(g, result, root=child)
+    representative = float('inf')
+    for child in g[root]:
+        representative = min(representative, tree_to_newick_list(g, result, root=child))
         result.append(',')
     result[-1] = ')' # replace last comma with closing parenthesis
     return
 
-def tree_to_newick(g, root=None):
+def tree_to_newick2(g, root=None):
     result = []
     tree_to_newick_list(g, result, root=root)
     return ''.join(result)
