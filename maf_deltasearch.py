@@ -1,32 +1,118 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-
-from abc import ABC
-from collections.abc import Mapping, Set
-import io
-from functools import cached_property
 import random
 import signal
 import sys
 
-class NetworkXError(Exception):
-    """Exception for a serious error in NetworkX"""
+class _NodeView:
+    def __init__(self, nodes):
+        self._nodes = nodes
 
-def _clear_cache(G):
-    if cache := getattr(G, "__networkx_cache__", None):
-        cache.clear()
+    def __iter__(self):
+        return iter(self._nodes)
+
+    def __contains__(self, n):
+        return n in self._nodes
+
+
+class DiGraph:
+    def __init__(self):
+        self._succ = {}
+        self._pred = {}
+        self._node = set()
+
+    def __contains__(self, n):
+        return n in self._node
+
+    def __iter__(self):
+        return iter(self._node)
+
+    def __len__(self):
+        return len(self._node)
+
+    def __getitem__(self, n):
+        return self._succ[n]
+
+    def _add_node(self, n):
+        if n not in self._succ:
+            self._succ[n] = {}
+            self._pred[n] = {}
+            self._node.add(n)
+
+    def add_node(self, n):
+        self._add_node(n)
+
+    def remove_node(self, n):
+        for s in list(self._succ[n]):
+            del self._pred[s][n]
+        for p in list(self._pred[n]):
+            del self._succ[p][n]
+        del self._succ[n]
+        del self._pred[n]
+        self._node.discard(n)
+
+    def add_edge(self, u, v):
+        self._add_node(u)
+        self._add_node(v)
+        self._succ[u][v] = {}
+        self._pred[v][u] = {}
+
+    def add_edges_from(self, edges):
+        for e in edges:
+            self.add_edge(e[0], e[1])
+
+    def remove_edge(self, u, v):
+        del self._succ[u][v]
+        del self._pred[v][u]
+
+    def remove_edges_from(self, edges):
+        for e in edges:
+            u, v = e[0], e[1]
+            if u in self._succ and v in self._succ[u]:
+                self.remove_edge(u, v)
+
+    def successors(self, n):
+        return iter(self._succ[n])
+
+    def predecessors(self, n):
+        return iter(self._pred[n])
+
+    def out_degree(self, n):
+        return len(self._succ[n])
+
+    def in_degree(self, n=None):
+        if n is not None:
+            return len(self._pred[n])
+        return ((v, len(p)) for v, p in self._pred.items())
+
+    @property
+    def nodes(self):
+        return _NodeView(self._node)
+
+    def edges(self):
+        return ((u, v) for u, nbrs in self._succ.items() for v in nbrs)
+
+    def copy(self):
+        G = DiGraph()
+        G._node = set(self._node)
+        G._succ = {u: dict(nbrs) for u, nbrs in self._succ.items()}
+        G._pred = {u: dict(preds) for u, preds in self._pred.items()}
+        return G
+
 
 def create_empty_copy(G):
     H = DiGraph()
-    H.add_nodes_from(G.nodes(data=True))
-    H.graph.update(G.graph)
+    H._node = set(G._node)
+    H._succ = {n: {} for n in G._node}
+    H._pred = {n: {} for n in G._node}
     return H
+
 
 def all_leaves_tree(G, source):
     if G.out_degree(source) == 0:
         yield source
     for v in G._succ[source]:
         yield from all_leaves_tree(G, v)
+
 
 def delete_subtree(G, leaves, source):
     if source in leaves:
@@ -41,700 +127,8 @@ def delete_subtree(G, leaves, source):
         G.remove_node(source)
     return flag
 
-class DiDegreeView:
-    def __init__(self, G, nbunch=None, weight=None):
-        self._graph = G
-        self._succ = G._succ if hasattr(G, "_succ") else G._adj
-        self._pred = G._pred if hasattr(G, "_pred") else G._adj
-        self._nodes = self._succ if nbunch is None else list(G.nbunch_iter(nbunch))
-        self._weight = weight
 
-    def __call__(self, nbunch=None, weight=None):
-        if nbunch is None:
-            if weight == self._weight:
-                return self
-            return self.__class__(self._graph, None, weight)
-        try:
-            if nbunch in self._nodes:
-                if weight == self._weight:
-                    return self[nbunch]
-                return self.__class__(self._graph, None, weight)[nbunch]
-        except TypeError:
-            pass
-        return self.__class__(self._graph, nbunch, weight)
-
-    def __getitem__(self, n):
-        weight = self._weight
-        succs = self._succ[n]
-        preds = self._pred[n]
-        if weight is None:
-            return len(succs) + len(preds)
-        return sum(dd.get(weight, 1) for dd in succs.values()) + sum(
-            dd.get(weight, 1) for dd in preds.values()
-        )
-
-    def __iter__(self):
-        weight = self._weight
-        if weight is None:
-            for n in self._nodes:
-                succs = self._succ[n]
-                preds = self._pred[n]
-                yield (n, len(succs) + len(preds))
-        else:
-            for n in self._nodes:
-                succs = self._succ[n]
-                preds = self._pred[n]
-                deg = sum(dd.get(weight, 1) for dd in succs.values()) + sum(
-                    dd.get(weight, 1) for dd in preds.values()
-                )
-                yield (n, deg)
-
-    def __len__(self):
-        return len(self._nodes)
-
-    def __str__(self):
-        return str(list(self))
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({dict(self)})"
-
-class OutDegreeView(DiDegreeView):
-    def __getitem__(self, n):
-        nbrs = self._succ[n]
-        if self._weight is None:
-            return len(nbrs)
-        return sum(dd.get(self._weight, 1) for dd in nbrs.values())
-
-    def __iter__(self):
-        weight = self._weight
-        if weight is None:
-            for n in self._nodes:
-                succs = self._succ[n]
-                yield (n, len(succs))
-        else:
-            for n in self._nodes:
-                succs = self._succ[n]
-                deg = sum(dd.get(weight, 1) for dd in succs.values())
-                yield (n, deg)
-
-class InDegreeView(DiDegreeView):
-    def __getitem__(self, n):
-        weight = self._weight
-        nbrs = self._pred[n]
-        if weight is None:
-            return len(nbrs)
-        return sum(dd.get(weight, 1) for dd in nbrs.values())
-
-    def __iter__(self):
-        weight = self._weight
-        if weight is None:
-            for n in self._nodes:
-                preds = self._pred[n]
-                yield (n, len(preds))
-        else:
-            for n in self._nodes:
-                preds = self._pred[n]
-                deg = sum(dd.get(weight, 1) for dd in preds.values())
-                yield (n, deg)
-
-class AtlasView(Mapping):
-    __slots__ = ("_atlas",)
-
-    def __getstate__(self):
-        return {"_atlas": self._atlas}
-
-    def __setstate__(self, state):
-        self._atlas = state["_atlas"]
-
-    def __init__(self, d):
-        self._atlas = d
-
-    def __len__(self):
-        return len(self._atlas)
-
-    def __iter__(self):
-        return iter(self._atlas)
-
-    def __getitem__(self, key):
-        return self._atlas[key]
-
-    def copy(self):
-        return {n: self[n].copy() for n in self._atlas}
-
-    def __str__(self):
-        return str(self._atlas)  # {nbr: self[nbr] for nbr in self})
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self._atlas!r})"
-class AdjacencyView(AtlasView):
-
-    __slots__ = ()  # Still uses AtlasView slots names _atlas
-
-    def __getitem__(self, name):
-        return AtlasView(self._atlas[name])
-
-    def copy(self):
-        return {n: self[n].copy() for n in self._atlas}
-class OutEdgeDataView(ABC):
-    """EdgeDataView for outward edges of DiGraph; See EdgeDataView"""
-
-    __slots__ = (
-        "_viewer",
-        "_nbunch",
-        "_data",
-        "_default",
-        "_adjdict",
-        "_nodes_nbrs",
-        "_report",
-    )
-
-    def __getstate__(self):
-        return {
-            "viewer": self._viewer,
-            "nbunch": self._nbunch,
-            "data": self._data,
-            "default": self._default,
-        }
-
-    def __setstate__(self, state):
-        self.__init__(**state)
-
-    def __init__(self, viewer, nbunch=None, data=False, *, default=None):
-        self._viewer = viewer
-        adjdict = self._adjdict = viewer._adjdict
-        if nbunch is None:
-            self._nodes_nbrs = adjdict.items
-        else:
-            # dict retains order of nodes but acts like a set
-            nbunch = dict.fromkeys(viewer._graph.nbunch_iter(nbunch))
-            self._nodes_nbrs = lambda: [(n, adjdict[n]) for n in nbunch]
-        self._nbunch = nbunch
-        self._data = data
-        self._default = default
-        # Set _report based on data and default
-        if data is True:
-            self._report = lambda n, nbr, dd: (n, nbr, dd)
-        elif data is False:
-            self._report = lambda n, nbr, dd: (n, nbr)
-        else:  # data is attribute name
-            self._report = lambda n, nbr, dd: (
-                (n, nbr, dd[data]) if data in dd else (n, nbr, default)
-            )
-
-    def __len__(self):
-        return sum(len(nbrs) for n, nbrs in self._nodes_nbrs())
-
-    def __iter__(self):
-        return (
-            self._report(n, nbr, dd)
-            for n, nbrs in self._nodes_nbrs()
-            for nbr, dd in nbrs.items()
-        )
-
-    def __contains__(self, e):
-        u, v = e[:2]
-        if self._nbunch is not None and u not in self._nbunch:
-            return False  # this edge doesn't start in nbunch
-        try:
-            ddict = self._adjdict[u][v]
-        except KeyError:
-            return False
-        return e == self._report(u, v, ddict)
-
-    def __str__(self):
-        return str(list(self))
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({list(self)})"
-
-class OutEdgeView(Set, Mapping):
-    """A EdgeView class for outward edges of a DiGraph"""
-
-    __slots__ = ("_adjdict", "_graph", "_nodes_nbrs")
-
-    def __getstate__(self):
-        return {"_graph": self._graph, "_adjdict": self._adjdict}
-
-    def __setstate__(self, state):
-        self._graph = state["_graph"]
-        self._adjdict = state["_adjdict"]
-        self._nodes_nbrs = self._adjdict.items
-
-    @classmethod
-    def _from_iterable(cls, it):
-        return set(it)
-
-    dataview = OutEdgeDataView
-
-    def __init__(self, G):
-        self._graph = G
-        self._adjdict = G._succ if hasattr(G, "succ") else G._adj
-        self._nodes_nbrs = self._adjdict.items
-
-    # Set methods
-    def __len__(self):
-        return sum(len(nbrs) for n, nbrs in self._nodes_nbrs())
-
-    def __iter__(self):
-        for n, nbrs in self._nodes_nbrs():
-            for nbr in nbrs:
-                yield (n, nbr)
-
-    def __contains__(self, e):
-        try:
-            u, v = e
-            return v in self._adjdict[u]
-        except KeyError:
-            return False
-
-    # Mapping Methods
-    def __getitem__(self, e):
-        if isinstance(e, slice):
-            raise NetworkXError(
-                f"{type(self).__name__} does not support slicing, "
-                f"try list(G.edges)[{e.start}:{e.stop}:{e.step}]"
-            )
-        u, v = e
-        try:
-            return self._adjdict[u][v]
-        except KeyError as err:
-            err.add_note(f"The edge {e} is not in the graph")
-            raise
-
-    # EdgeDataView methods
-    def __call__(self, nbunch=None, data=False, *, default=None):
-        if nbunch is None and data is False:
-            return self
-        return self.dataview(self, nbunch, data, default=default)
-
-    def data(self, data=True, default=None, nbunch=None):
-        if nbunch is None and data is False:
-            return self
-        return self.dataview(self, nbunch, data, default=default)
-
-    # String Methods
-    def __str__(self):
-        return str(list(self))
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({list(self)})"
-
-class NodeDataView(Set):
-    __slots__ = ("_nodes", "_data", "_default")
-
-    def __getstate__(self):
-        return {"_nodes": self._nodes, "_data": self._data, "_default": self._default}
-
-    def __setstate__(self, state):
-        self._nodes = state["_nodes"]
-        self._data = state["_data"]
-        self._default = state["_default"]
-
-    def __init__(self, nodedict, data=False, default=None):
-        self._nodes = nodedict
-        self._data = data
-        self._default = default
-
-    @classmethod
-    def _from_iterable(cls, it):
-        try:
-            return set(it)
-        except TypeError as err:
-            if "unhashable" in str(err):
-                msg = " : Could be b/c data=True or your values are unhashable"
-                raise TypeError(str(err) + msg) from err
-            raise
-
-    def __len__(self):
-        return len(self._nodes)
-
-    def __iter__(self):
-        data = self._data
-        if data is False:
-            return iter(self._nodes)
-        if data is True:
-            return iter(self._nodes.items())
-        return (
-            (n, dd[data] if data in dd else self._default)
-            for n, dd in self._nodes.items()
-        )
-
-    def __contains__(self, n):
-        try:
-            node_in = n in self._nodes
-        except TypeError:
-            n, d = n
-            return n in self._nodes and self[n] == d
-        if node_in is True:
-            return node_in
-        try:
-            n, d = n
-        except (TypeError, ValueError):
-            return False
-        return n in self._nodes and self[n] == d
-
-    def __getitem__(self, n):
-        if isinstance(n, slice):
-            raise NetworkXError(
-                f"{type(self).__name__} does not support slicing, "
-                f"try list(G.nodes.data())[{n.start}:{n.stop}:{n.step}]"
-            )
-        ddict = self._nodes[n]
-        data = self._data
-        if data is False or data is True:
-            return ddict
-        return ddict[data] if data in ddict else self._default
-
-    def __str__(self):
-        return str(list(self))
-
-    def __repr__(self):
-        name = self.__class__.__name__
-        if self._data is False:
-            return f"{name}({tuple(self)})"
-        if self._data is True:
-            return f"{name}({dict(self)})"
-        return f"{name}({dict(self)}, data={self._data!r})"
-
-class NodeView(Mapping, Set):
-
-    __slots__ = ("_nodes",)
-
-    def __getstate__(self):
-        return {"_nodes": self._nodes}
-
-    def __setstate__(self, state):
-        self._nodes = state["_nodes"]
-
-    def __init__(self, graph):
-        self._nodes = graph._node
-
-    # Mapping methods
-    def __len__(self):
-        return len(self._nodes)
-
-    def __iter__(self):
-        return iter(self._nodes)
-
-    def __getitem__(self, n):
-        if isinstance(n, slice):
-            raise NetworkXError(
-                f"{type(self).__name__} does not support slicing, "
-                f"try list(G.nodes)[{n.start}:{n.stop}:{n.step}]"
-            )
-        return self._nodes[n]
-
-    # Set methods
-    def __contains__(self, n):
-        return n in self._nodes
-
-    @classmethod
-    def _from_iterable(cls, it):
-        return set(it)
-
-    # DataView method
-    def __call__(self, data=False, default=None):
-        if data is False:
-            return self
-        return NodeDataView(self._nodes, data, default)
-
-    def data(self, data=True, default=None):
-        if data is False:
-            return self
-        return NodeDataView(self._nodes, data, default)
-
-    def __str__(self):
-        return str(list(self))
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({tuple(self)})"
-
-
-# https://networkx.org/documentation/stable/_modules/networkx/classes/digraph.html#DiGraph
-
-class _CachedPropertyResetterAdjAndSucc:
-    def __set__(self, obj, value):
-        od = obj.__dict__
-        od["_adj"] = value
-        od["_succ"] = value
-        # reset cached properties
-        props = [
-            "adj",
-            "succ",
-            "edges",
-            "out_edges",
-            "degree",
-            "out_degree",
-            "in_degree",
-        ]
-        for prop in props:
-            if prop in od:
-                del od[prop]
-
-
-class _CachedPropertyResetterPred:
-    def __set__(self, obj, value):
-        od = obj.__dict__
-        od["_pred"] = value
-        # reset cached properties
-        props = ["pred", "in_edges", "degree", "out_degree", "in_degree"]
-        for prop in props:
-            if prop in od:
-                del od[prop]
-class _CachedPropertyResetterNode:
-
-    def __set__(self, obj, value):
-        od = obj.__dict__
-        od["_node"] = value
-        # reset cached properties
-        if "nodes" in od:
-            del od["nodes"]
-
-class DiGraph:
-
-    __networkx_backend__ = "networkx"
-
-    _node = _CachedPropertyResetterNode()
-
-    node_dict_factory = dict
-    node_attr_dict_factory = dict
-    adjlist_outer_dict_factory = dict
-    adjlist_inner_dict_factory = dict
-    edge_attr_dict_factory = dict
-    graph_attr_dict_factory = dict
-
-    _adj = _CachedPropertyResetterAdjAndSucc()  # type: ignore[assignment]
-    _succ = _adj  # type: ignore[has-type]
-    _pred = _CachedPropertyResetterPred()
-
-    def __init__(self, incoming_graph_data=None, **attr):
-        self.graph = self.graph_attr_dict_factory()  # dictionary for graph attributes
-        self._node = self.node_dict_factory()  # dictionary for node attr
-        # We store two adjacency lists:
-        # the predecessors of node n are stored in the dict self._pred
-        # the successors of node n are stored in the dict self._succ=self._adj
-        self._adj = self.adjlist_outer_dict_factory()  # empty adjacency dict successor
-        self._pred = self.adjlist_outer_dict_factory()  # predecessor
-        # Note: self._succ = self._adj  # successor
-
-        self.__networkx_cache__ = {}
-        # attempt to load graph with data
-        if incoming_graph_data is not None:
-            convert.to_networkx_graph(incoming_graph_data, create_using=self)
-        # load graph attributes (must be after convert)
-        attr.pop("backend", None)  # Ignore explicit `backend="networkx"`
-        self.graph.update(attr)
-
-    def __str__(self):
-        return "".join(
-            [
-                type(self).__name__,
-                f" named {self.name!r}" if self.name else "",
-                f" with {self.number_of_nodes()} nodes and {self.number_of_edges()} edges",
-            ]
-        )
-
-
-    def __iter__(self):
-        return iter(self._node)
-
-
-
-    def __contains__(self, n):
-        try:
-            return n in self._node
-        except TypeError:
-            return False
-
-    def __len__(self):
-        return len(self._node)
-
-    def __getitem__(self, n):
-        return self.adj[n]
-
-    def copy(self):
-        G = self.__class__()
-        G.graph.update(self.graph)
-        G.add_nodes_from((n, d.copy()) for n, d in self._node.items())
-        G.add_edges_from(
-            (u, v, datadict.copy())
-            for u, nbrs in self._adj.items()
-            for v, datadict in nbrs.items()
-        )
-        return G
-
-    @cached_property
-    def nodes(self):
-        return NodeView(self)
-
-    @cached_property
-    def adj(self):
-        return AdjacencyView(self._succ)
-
-    def add_node(self, node_for_adding, **attr):
-        if node_for_adding not in self._succ:
-            if node_for_adding is None:
-                raise ValueError("None cannot be a node")
-            self._succ[node_for_adding] = self.adjlist_inner_dict_factory()
-            self._pred[node_for_adding] = self.adjlist_inner_dict_factory()
-            attr_dict = self._node[node_for_adding] = self.node_attr_dict_factory()
-            attr_dict.update(attr)
-        else:  # update attr even if node already exists
-            self._node[node_for_adding].update(attr)
-        _clear_cache(self)
-
-    
-    def add_nodes_from(self, nodes_for_adding, **attr):
-        for n in nodes_for_adding:
-            try:
-                newnode = n not in self._node
-                newdict = attr
-            except TypeError:
-                n, ndict = n
-                newnode = n not in self._node
-                newdict = attr.copy()
-                newdict.update(ndict)
-            if newnode:
-                if n is None:
-                    raise ValueError("None cannot be a node")
-                self._succ[n] = self.adjlist_inner_dict_factory()
-                self._pred[n] = self.adjlist_inner_dict_factory()
-                self._node[n] = self.node_attr_dict_factory()
-            self._node[n].update(newdict)
-        _clear_cache(self)
-
-
-    
-    def remove_node(self, n):
-        try:
-            nbrs = self._succ[n]
-            del self._node[n]
-        except KeyError as err:  # NetworkXError if n not in self
-            raise NetworkXError(f"The node {n} is not in the digraph.") from err
-        for u in nbrs:
-            del self._pred[u][n]  # remove all edges n-u in digraph
-        del self._succ[n]  # remove node from succ
-        for u in self._pred[n]:
-            del self._succ[u][n]  # remove all edges n-u in digraph
-        del self._pred[n]  # remove node from pred
-        _clear_cache(self)
-
-
-    
-
-
-    def add_edge(self, u_of_edge, v_of_edge, **attr):
-        u, v = u_of_edge, v_of_edge
-        # add nodes
-        if u not in self._succ:
-            if u is None:
-                raise ValueError("None cannot be a node")
-            self._succ[u] = self.adjlist_inner_dict_factory()
-            self._pred[u] = self.adjlist_inner_dict_factory()
-            self._node[u] = self.node_attr_dict_factory()
-        if v not in self._succ:
-            if v is None:
-                raise ValueError("None cannot be a node")
-            self._succ[v] = self.adjlist_inner_dict_factory()
-            self._pred[v] = self.adjlist_inner_dict_factory()
-            self._node[v] = self.node_attr_dict_factory()
-        # add the edge
-        datadict = self._adj[u].get(v, self.edge_attr_dict_factory())
-        datadict.update(attr)
-        self._succ[u][v] = datadict
-        self._pred[v][u] = datadict
-        _clear_cache(self)
-
-    def add_edges_from(self, ebunch_to_add, **attr):
-        for e in ebunch_to_add:
-            ne = len(e)
-            if ne == 3:
-                u, v, dd = e
-            elif ne == 2:
-                u, v = e
-                dd = {}
-            else:
-                raise NetworkXError(f"Edge tuple {e} must be a 2-tuple or 3-tuple.")
-            if u not in self._succ:
-                if u is None:
-                    raise ValueError("None cannot be a node")
-                self._succ[u] = self.adjlist_inner_dict_factory()
-                self._pred[u] = self.adjlist_inner_dict_factory()
-                self._node[u] = self.node_attr_dict_factory()
-            if v not in self._succ:
-                if v is None:
-                    raise ValueError("None cannot be a node")
-                self._succ[v] = self.adjlist_inner_dict_factory()
-                self._pred[v] = self.adjlist_inner_dict_factory()
-                self._node[v] = self.node_attr_dict_factory()
-            datadict = self._adj[u].get(v, self.edge_attr_dict_factory())
-            datadict.update(attr)
-            datadict.update(dd)
-            self._succ[u][v] = datadict
-            self._pred[v][u] = datadict
-        _clear_cache(self)
-
-    
-    def remove_edge(self, u, v):
-        try:
-            del self._succ[u][v]
-            del self._pred[v][u]
-        except KeyError as err:
-            raise NetworkXError(f"The edge {u}-{v} not in graph.") from err
-        _clear_cache(self)
-
-    
-    def remove_edges_from(self, ebunch):
-        for e in ebunch:
-            u, v = e[:2]  # ignore edge data
-            if u in self._succ and v in self._succ[u]:
-                del self._succ[u][v]
-                del self._pred[v][u]
-        _clear_cache(self)
-
-
-    def has_successor(self, u, v):
-        return u in self._succ and v in self._succ[u]
-
-    def has_predecessor(self, u, v):
-        return u in self._pred and v in self._pred[u]
-
-    
-    def successors(self, n):
-        try:
-            return iter(self._succ[n])
-        except KeyError as err:
-            raise NetworkXError(f"The node {n} is not in the digraph.") from err
-
-# digraph definitions
-    neighbors = successors
-
-    def predecessors(self, n):
-        try:
-            return iter(self._pred[n])
-        except KeyError as err:
-            raise NetworkXError(f"The node {n} is not in the digraph.") from err
-
-
-
-    
-    @cached_property
-    def edges(self):
-        return OutEdgeView(self)
-
-    @cached_property
-    def degree(self):
-        return DiDegreeView(self)
-
-    @cached_property
-    def in_degree(self):
-        return InDegreeView(self)
-
-    @cached_property
-    def out_degree(self):
-        return OutDegreeView(self)
-
-def remove_contract_rooted(T: nx.DiGraph, leaves: frozenset, node) -> int:
+def remove_contract_rooted(T, leaves: frozenset, node):
     if node in leaves:
         assert node in T
         return node
@@ -750,83 +144,30 @@ def remove_contract_rooted(T: nx.DiGraph, leaves: frozenset, node) -> int:
         if preds:
             T.add_edge(preds[0], child)
         T.remove_node(node)
-        # assert child in T
         return child
-    # assert node in T
     return node
 
 
 class NumComponentSpec:
-    def __init__(self, graph: nx.DiGraph, all_leaves: frozenset):
+    def __init__(self, graph: DiGraph, all_leaves: frozenset):
         self._all_leaves = all_leaves
 
-    def __call__(self, graph:nx.DiGraph) -> float:
-        score = -len({find_root(graph, leaf) for leaf in self._all_leaves})
-        return score
+    def __call__(self, graph: DiGraph) -> float:
+        return -len({find_root(graph, leaf) for leaf in self._all_leaves})
+
 
 def find_root(graph, node):
     while graph.in_degree(node) == 1:
         node = next(iter(graph.predecessors(node)))
     return node
 
-def _get_min(graph, node, leaves):
-    if graph.nodes[node].get("min", None) is not None:
-        return graph.nodes[node]["min"]
-    if node in leaves:
-        graph.nodes[node]["min"] = node
-        return node
-    
-    if graph.out_degree(node) == 0:
-        graph.nodes[node]["min"] = float('inf')
-        return float('inf')
-    
-    mini = float('inf')
-    for child in graph.successors(node):
-        mini = min(mini, _get_min(graph, child, leaves))
-    
-    graph.nodes[node]["min"] = mini
-    return mini
-    
 
-def get_min(graph, leaves):
-    roots = [v for v in graph.nodes if graph.in_degree(v) == 0]
-    for root in roots:
-        _get_min(graph, root, leaves)
-
-def compare_trees(node1, T1, node2, T2, leaves):
-    while True:
-        if T1.out_degree(node1) == 0:
-            break
-        if T1.out_degree(node1) == 1:
-            node1 = next(iter(T1.successors(node1)))
-        if T1.out_degree(node1) == 2:
-            node11, node12 = T1.successors(node1)
-            if _get_min(T1, node11, leaves) != float('inf') and _get_min(T1, node12, leaves) != float('inf'):
-                break
-    while T2.out_degree(node2) == 1:
-        node2 = next(iter(T2.successors(node2)))
-
-    if T1.out_degree(node1) == 0 and T2.out_degree(node2) == 0:
-        return True
-    
-    if T1.out_degree(node1) == 0 or T2.out_degree(node2) == 0:
-        return False
-    
-    node11, node12 = T1.successors(node1)
-    node21, node22 = T2.successors(node2)
-    if _get_min(T1, node11, leaves) > _get_min(T1, node12, leaves):
-        node11, node12 = node12, node11
-    if _get_min(T2, node21, leaves) > _get_min(T2, node22, leaves):
-        node21, node22 = node22, node21
-    
-    return compare_trees(node11, T1, node21, T2, leaves) and compare_trees(node12, T1, node22, T2, leaves)
 class AgreementSpec:
-
-    def __init__(self, T2: nx.DiGraph, all_leaves: frozenset):
+    def __init__(self, T2: DiGraph, all_leaves: frozenset):
         self._T2 = T2
         self._all_leaves = all_leaves
 
-    def __call__(self, graph:nx.DiGraph) -> float:
+    def __call__(self, graph: DiGraph):
         roots = [v for v in graph.nodes if graph.in_degree(v) == 0]
         nxt_roots = set()
         T1_contracted = graph.copy()
@@ -834,13 +175,10 @@ class AgreementSpec:
             root = remove_contract_rooted(T1_contracted, self._all_leaves, root)
             if root is not None:
                 nxt_roots.add(root)
-        T1_roots = nxt_roots
         T2 = self._T2.copy()
-        for T1_root in T1_roots:
-
+        for T1_root in nxt_roots:
             T1_leaves = set(all_leaves_tree(T1_contracted, T1_root))
-            leaf = next(iter(T1_leaves))
-            T2_root = find_root(T2, leaf)
+            T2_root = find_root(T2, next(iter(T1_leaves)))
             T2_leaves = set(all_leaves_tree(T2, T2_root))
 
             if not (T2_leaves >= T1_leaves):
@@ -851,31 +189,20 @@ class AgreementSpec:
 
             if tree_to_newick(T1_contracted, root=T1_root) != tree_to_newick(T2_removed, root=T2_root):
                 return False, None
-            
+
             delete_subtree(T2, T1_leaves, T2_root)
-            
 
         return True, T1_contracted.copy()
 
-
-# ---------------------------------------------------------------------------
-# MAF DeltaSearch solver
-# ---------------------------------------------------------------------------
-
 class GraphSeeker:
-    def __init__(self, graph: nx.DiGraph, leaves: frozenset[int], score:Callable[[nx.DiGraph], float], validity:Callable[[nx.DiGraph], bool]):
+    def __init__(self, graph: DiGraph, leaves: frozenset[int], score, validity):
         self.graph = graph
         self.leaves = leaves
-
         self.score = score
         self.valid = validity
-
         self.result = create_empty_copy(self.graph)
         self.best_score = self.score(self.result)
         self.empty_score = self.best_score
-        # self.print = self.prepare_solution(self.result)
-
-        # https://optil.io/optilion/help/signals
         signal.signal(signal.SIGINT, self.exit)
         signal.signal(signal.SIGTERM, self.exit)
 
@@ -889,7 +216,6 @@ class GraphSeeker:
             while n < len(c):
                 n = min(2*n, len(c))
                 k, m = divmod(len(c), n)
-
                 for i in range(n-1, -1, -1):
                     tst_subset = c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
                     cs = cur_soln + tst_subset
@@ -904,11 +230,8 @@ class GraphSeeker:
                             if cur_score > self.best_score:
                                 self.result = contracted_graph
                                 self.best_score = cur_score
-                                # self.print = self.prepare_solution(self.result)
                                 continue
                     cur_graph.remove_edges_from(tst_subset)
-
-            # self.exit(None, None)
             c = list(self.graph.edges())
             random.shuffle(c)
 
@@ -918,92 +241,64 @@ class GraphSeeker:
         for leaf in self.leaves:
             if leaf not in visited:
                 root = find_root(graph, leaf)
-                # root = remove_contract_rooted(graph, self.leaves, root)
-                out_tree = tree_to_newick_print(graph, root=root)
+                out_trees.append(tree_to_newick_print(graph, root=root))
                 visited.update(all_leaves_tree(graph, root))
-                out_trees.append(out_tree)        
         return "\n".join(out_trees)
 
     def exit(self, signum, frame):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        # TODO: Uncomment following line
-        self.print = self.prepare_solution(self.result)
-        print(self.print)
+        print(self.prepare_solution(self.result))
         sys.exit(0)
 
 
-# ---------------------------------------------------------------------------
-# PACE 2026 I/O
-# https://pacechallenge.org/2026/format/#relevant-subset-of-the-newick-format
-# ---------------------------------------------------------------------------
-
-def read_input(f) -> tuple[nx.DiGraph, nx.DiGraph, set]:
+def read_input(f):
     n_leaves = None
-    n_trees = None
-    a, b = None, None
-    parameters = dict()
-    all_edges: list[tuple[int, int]] = []
-    trees = list()
+    n_pending_trees = 0
+    trees = []
 
     for line in f:
         line = line.strip()
         if not line or line.startswith('#'):
-            line = line[1:].strip()  # Remove leading '#' for comment lines
-            parts = line.split()
-            if parts[0] == 'p':
-                n_trees = int(parts[1])
+            parts = line.lstrip('#').split()
+            if parts and parts[0] == 'p':
+                n_pending_trees = int(parts[1])
                 n_leaves = int(parts[2])
-                n_pending_trees = n_trees
-            elif parts[0] == 'a':
-                a, b = float(parts[1]), float(parts[2])
-            elif parts[0] == 'x':
-                parameter_key, parameter_value = parts[1], parts[2]
-                parameters[parameter_key] = parameter_value
         else:
-            newick_data = line
-            newick_data = newick_data.strip()
-            assert newick_data.endswith(';'), "Newick string must end with ';'"
-            # newick_data = newick_data[:-1]  + "0" + newick_data[-1]
-            # print(newick_data)
-            tree = parse_newick_to_digraph(newick_data)
-            trees.append(tree)
+            assert line.endswith(';'), "Newick string must end with ';'"
+            trees.append(parse_newick_to_digraph(line))
             n_pending_trees -= 1
             if n_pending_trees == 0:
                 break
 
     return trees, n_leaves
 
-# https://stackoverflow.com/a/57393072/9939883
+
 def tree_to_newick(g, root=None):
     newick_str, _ = _tree_to_newick(g, root=root)
     return newick_str
 
+
 def _tree_to_newick(g, root=None):
     if root is None:
-        roots = list(filter(lambda p: p[1] == 0, g.in_degree()))
-        assert 1 == len(roots)
-        root = roots[0][0]
-    subgs = []
+        roots = [n for n, d in g.in_degree() if d == 0]
+        assert len(roots) == 1
+        root = roots[0]
     if len(g[root]) == 0:
         return (str(root), root)
-    for child in g[root]:
-        subgs.append(_tree_to_newick(g, root=child))
-    subgs.sort(key=lambda x: x[1])
-    myid = min(x[1] for x in subgs)
-    return ("(" + ','.join(x[0] for x in subgs) + ")", myid)
+    subgs = sorted((_tree_to_newick(g, root=child) for child in g[root]), key=lambda x: x[1])
+    return ("(" + ','.join(x[0] for x in subgs) + ")", subgs[0][1])
+
 
 def tree_to_newick_list(g, result, root):
     if len(g[root]) == 0:
         result.append(str(root))
-        # return str(root)
-        return root
-    
+        return
     result.append("(")
     for child in g[root]:
         tree_to_newick_list(g, result, root=child)
         result.append(',')
-    result[-1] = ')' # replace last comma with closing parenthesis
-    return
+    result[-1] = ')'
+
 
 def tree_to_newick_print(g, root):
     result = []
@@ -1011,16 +306,9 @@ def tree_to_newick_print(g, root):
     result.append(';')
     return ''.join(result)
 
-def write_output(trees: list[str]) -> None:
-    result = []
-    for tree in trees:
-        newick_string = tree + ';'
-        result.append(newick_string)
-    print('\n'.join(result))
 
-def parse_newick_to_digraph(newick_str: str) -> nx.DiGraph:
+def parse_newick_to_digraph(newick_str: str) -> DiGraph:
     newick_str = newick_str.strip().rstrip(";")
-
     G = DiGraph()
     stack = []
     node_id = -1
@@ -1066,7 +354,6 @@ if __name__ == '__main__':
     trees, n_leaves = read_input(sys.stdin)
     leaves = frozenset(range(1, n_leaves + 1))
     T1, T2 = trees[0], trees[1]
-
     seeker = GraphSeeker(
         T1, leaves, NumComponentSpec(T1, leaves), AgreementSpec(T2, leaves)
     )
