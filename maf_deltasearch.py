@@ -9,54 +9,18 @@ import random
 import signal
 import sys
 
-
-class NetworkXException(Exception):
-    """Base class for exceptions in NetworkX."""
-class NetworkXError(NetworkXException):
+class NetworkXError(Exception):
     """Exception for a serious error in NetworkX"""
 
 def _clear_cache(G):
     if cache := getattr(G, "__networkx_cache__", None):
         cache.clear()
 
-def empty_graph(n=0, create_using=None):
-    G = DiGraph()
-    try:
-        nodes = list(range(n))
-    except TypeError:
-        nodes = tuple(n)
-    else:
-        if n < 0:
-            raise NetworkXError(f"Negative number of nodes not valid: {n}")
-    G.add_nodes_from(nodes)
-    return G
-
 def create_empty_copy(G):
     H = DiGraph()
     H.add_nodes_from(G.nodes(data=True))
     H.graph.update(G.graph)
     return H
-
-def bfs_edges(G, source):
-    neighbors = G.neighbors
-    depth_limit = len(G)
-
-    seen = {source}
-    n = len(G)
-    depth = 0
-    next_parents_children = [(source, neighbors(source))]
-    while next_parents_children and depth < depth_limit:
-        this_parents_children = next_parents_children
-        next_parents_children = []
-        for parent, children in this_parents_children:
-            for child in children:
-                if child not in seen:
-                    seen.add(child)
-                    next_parents_children.append((child, neighbors(child)))
-                    yield parent, child
-            if len(seen) == n:
-                return
-        depth += 1
 
 def all_leaves_tree(G, source):
     if G.out_degree(source) == 0:
@@ -75,17 +39,6 @@ def delete_subtree(G, leaves, source):
             flag = True
     if flag:
         G.remove_node(source)
-    return flag
-
-def delete_subtree_edges(G, leaves, source):
-    if source in leaves:
-        return True
-    children = list(G._succ[source])
-    flag = False
-    for v in children:
-        if delete_subtree_edges(G, leaves, v):
-            G.remove_edge(source, v)
-            flag = True
     return flag
 
 class DiDegreeView:
@@ -222,10 +175,7 @@ class AdjacencyView(AtlasView):
 
     def copy(self):
         return {n: self[n].copy() for n in self._atlas}
-class EdgeViewABC(ABC):
-    pass
-
-class OutEdgeDataView(EdgeViewABC):
+class OutEdgeDataView(ABC):
     """EdgeDataView for outward edges of DiGraph; See EdgeDataView"""
 
     __slots__ = (
@@ -297,7 +247,7 @@ class OutEdgeDataView(EdgeViewABC):
     def __repr__(self):
         return f"{self.__class__.__name__}({list(self)})"
 
-class OutEdgeView(Set, Mapping, EdgeViewABC):
+class OutEdgeView(Set, Mapping):
     """A EdgeView class for outward edges of a DiGraph"""
 
     __slots__ = ("_adjdict", "_graph", "_nodes_nbrs")
@@ -425,7 +375,7 @@ class NodeDataView(Set):
 
     def __getitem__(self, n):
         if isinstance(n, slice):
-            raise nx.NetworkXError(
+            raise NetworkXError(
                 f"{type(self).__name__} does not support slicing, "
                 f"try list(G.nodes.data())[{n.start}:{n.stop}:{n.step}]"
             )
@@ -468,7 +418,7 @@ class NodeView(Mapping, Set):
 
     def __getitem__(self, n):
         if isinstance(n, slice):
-            raise nx.NetworkXError(
+            raise NetworkXError(
                 f"{type(self).__name__} does not support slicing, "
                 f"try list(G.nodes)[{n.start}:{n.stop}:{n.step}]"
             )
@@ -499,37 +449,6 @@ class NodeView(Mapping, Set):
     def __repr__(self):
         return f"{self.__class__.__name__}({tuple(self)})"
 
-# https://networkx.org/documentation/stable/_modules/networkx/algorithms/components/weakly_connected.html#weakly_connected_components
-def weakly_connected_components(G):
-    seen = set()
-    n = len(G)  # must be outside the loop to avoid performance hit with graph views
-    for v in G:
-        if v not in seen:
-            c = _plain_bfs(G, n - len(seen), v)
-            seen.update(c)
-            yield c
-
-def _plain_bfs(G, n, source):
-    Gsucc = G._succ
-    Gpred = G._pred
-    seen = {source}
-    nextlevel = [source]
-
-    while nextlevel:
-        thislevel = nextlevel
-        nextlevel = []
-        for v in thislevel:
-            for w in Gsucc[v]:
-                if w not in seen:
-                    seen.add(w)
-                    nextlevel.append(w)
-            for w in Gpred[v]:
-                if w not in seen:
-                    seen.add(w)
-                    nextlevel.append(w)
-            if len(seen) == n:
-                return seen
-    return seen
 
 # https://networkx.org/documentation/stable/_modules/networkx/classes/digraph.html#DiGraph
 
@@ -652,15 +571,6 @@ class DiGraph:
     def adj(self):
         return AdjacencyView(self._succ)
 
-    @cached_property
-    def succ(self):
-        return AdjacencyView(self._succ)
-
-    @cached_property
-    def pred(self):
-        return AdjacencyView(self._pred)
-
-
     def add_node(self, node_for_adding, **attr):
         if node_for_adding not in self._succ:
             if node_for_adding is None:
@@ -711,20 +621,6 @@ class DiGraph:
 
 
     
-    def remove_nodes_from(self, nodes):
-        for n in nodes:
-            try:
-                succs = self._succ[n]
-                del self._node[n]
-                for u in succs:
-                    del self._pred[u][n]  # remove all edges n-u in digraph
-                del self._succ[n]  # now remove node
-                for u in self._pred[n]:
-                    del self._succ[u][n]  # remove all edges n-u in digraph
-                del self._pred[n]  # now remove node
-            except KeyError:
-                pass  # silent failure on remove
-        _clear_cache(self)
 
 
     def add_edge(self, u_of_edge, v_of_edge, **attr):
@@ -826,17 +722,6 @@ class DiGraph:
     def edges(self):
         return OutEdgeView(self)
 
-    # alias out_edges to edges
-    @cached_property
-    def out_edges(self):
-        return OutEdgeView(self)
-
-    out_edges.__doc__ = edges.__doc__
-
-    @cached_property
-    def in_edges(self):
-        return InEdgeView(self)
-
     @cached_property
     def degree(self):
         return DiDegreeView(self)
@@ -848,24 +733,6 @@ class DiGraph:
     @cached_property
     def out_degree(self):
         return OutDegreeView(self)
-
-    
-def remove_rooted(T: nx.DiGraph, leaves: frozenset, node) -> list[int]:
-    if node in leaves:
-        return node
-    for child in list(T.successors(node)):
-        remove_rooted(T, leaves, child)
-    out_deg = T.out_degree(node)
-    if out_deg == 0:
-        T.remove_node(node)
-    elif out_deg == 1:
-        preds = list(T.predecessors(node))
-        if not preds:
-            while T.out_degree(node) == 1:
-                child = next(iter(T.successors(node)))
-                T.remove_node(node)
-                node = child
-    return node
 
 def remove_contract_rooted(T: nx.DiGraph, leaves: frozenset, node) -> int:
     if node in leaves:
@@ -901,6 +768,58 @@ def find_root(graph, node):
     while graph.in_degree(node) == 1:
         node = next(iter(graph.predecessors(node)))
     return node
+
+def _get_min(graph, node, leaves):
+    if graph.nodes[node].get("min", None) is not None:
+        return graph.nodes[node]["min"]
+    if node in leaves:
+        graph.nodes[node]["min"] = node
+        return node
+    
+    if graph.out_degree(node) == 0:
+        graph.nodes[node]["min"] = float('inf')
+        return float('inf')
+    
+    mini = float('inf')
+    for child in graph.successors(node):
+        mini = min(mini, _get_min(graph, child, leaves))
+    
+    graph.nodes[node]["min"] = mini
+    return mini
+    
+
+def get_min(graph, leaves):
+    roots = [v for v in graph.nodes if graph.in_degree(v) == 0]
+    for root in roots:
+        _get_min(graph, root, leaves)
+
+def compare_trees(node1, T1, node2, T2, leaves):
+    while True:
+        if T1.out_degree(node1) == 0:
+            break
+        if T1.out_degree(node1) == 1:
+            node1 = next(iter(T1.successors(node1)))
+        if T1.out_degree(node1) == 2:
+            node11, node12 = T1.successors(node1)
+            if _get_min(T1, node11, leaves) != float('inf') and _get_min(T1, node12, leaves) != float('inf'):
+                break
+    while T2.out_degree(node2) == 1:
+        node2 = next(iter(T2.successors(node2)))
+
+    if T1.out_degree(node1) == 0 and T2.out_degree(node2) == 0:
+        return True
+    
+    if T1.out_degree(node1) == 0 or T2.out_degree(node2) == 0:
+        return False
+    
+    node11, node12 = T1.successors(node1)
+    node21, node22 = T2.successors(node2)
+    if _get_min(T1, node11, leaves) > _get_min(T1, node12, leaves):
+        node11, node12 = node12, node11
+    if _get_min(T2, node21, leaves) > _get_min(T2, node22, leaves):
+        node21, node22 = node22, node21
+    
+    return compare_trees(node11, T1, node21, T2, leaves) and compare_trees(node12, T1, node22, T2, leaves)
 class AgreementSpec:
 
     def __init__(self, T2: nx.DiGraph, all_leaves: frozenset):
@@ -975,10 +894,10 @@ class GraphSeeker:
                     tst_subset = c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
                     cs = cur_soln + tst_subset
                     cur_graph.add_edges_from(tst_subset)
-                    agreement, contracted_graph = self.valid(cur_graph)
-                    if agreement:
-                        tst_score = self.score(cur_graph)
-                        if tst_score > cur_score:
+                    tst_score = self.score(cur_graph)
+                    if tst_score > cur_score:
+                        agreement, contracted_graph = self.valid(cur_graph)
+                        if agreement:
                             cur_score = tst_score
                             cur_soln = cs
                             del c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
@@ -1004,24 +923,6 @@ class GraphSeeker:
                 visited.update(all_leaves_tree(graph, root))
                 out_trees.append(out_tree)        
         return "\n".join(out_trees)
-
-
-        all_leaves = self.leaves
-        out_trees = []
-        all_roots = {v for v in graph.nodes() if graph.in_degree(v) == 0}
-        for comp in list(weakly_connected_components(graph)):
-            if not (comp & all_leaves):
-                continue
-            roots = list(all_roots & comp)
-            assert len(roots) == 1
-            root = roots[0]
-            root = remove_contract_rooted(graph, all_leaves, root)
-            assert root is not None
-            out_tree = tree_to_newick(graph, root=root) 
-            # tree_nodes = all_vertex_component(graph, root)
-            # tree = graph.subgraph(tree_nodes)
-            out_trees.append(out_tree)
-        return ";\n".join(out_trees)+";"
 
     def exit(self, signum, frame):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
