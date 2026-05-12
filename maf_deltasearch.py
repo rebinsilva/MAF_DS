@@ -108,7 +108,7 @@ def create_empty_copy(G):
 
 
 def all_leaves_tree(G, source):
-    if G.out_degree(source) == 0:
+    if source > 0:
         yield source
     for v in G._succ[source]:
         yield from all_leaves_tree(G, v)
@@ -257,18 +257,14 @@ class AgreementSpec:
         self._T2 = T2
         self._all_leaves = all_leaves
 
-    def __call__(self, graph: DiGraph):
-        roots = [v for v in graph.nodes if graph.in_degree(v) == 0]
-        nxt_roots = set()
-        T1_contracted = graph.copy()
-        for root in roots:
-            root = remove_contract_rooted(T1_contracted, self._all_leaves, root)
-            if root is not None:
-                nxt_roots.add(root)
-        get_min(T1_contracted, self._all_leaves)
+    def __call__(self, T1: DiGraph):
+        roots = [v for v in T1.nodes if T1.in_degree(v) == 0]
+        get_min(T1, self._all_leaves)
         T2 = self._T2.copy()
-        for T1_root in nxt_roots:
-            T1_leaves = set(all_leaves_tree(T1_contracted, T1_root))
+        for T1_root in roots:
+            T1_leaves = set(all_leaves_tree(T1, T1_root))
+            if not T1_leaves:
+                continue
             T2_root = find_root(T2, next(iter(T1_leaves)))
             n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves)
 
@@ -276,12 +272,17 @@ class AgreementSpec:
                 return False, None
 
             _get_min(T2, T2_root, T1_leaves)
-            if not compare_trees(T1_root, T1_contracted, T2_root, T2, T1_leaves):
+            if not compare_trees(T1_root, T1, T2_root, T2, T1_leaves):
                 return False, None
 
             delete_subtree(T2, T1_leaves, T2_root)
 
-        return True, T1_contracted.copy()
+        T1_contracted = T1.copy()
+        roots = [v for v in T1_contracted.nodes if T1_contracted.in_degree(v) == 0]
+        for root in roots:
+            remove_contract_rooted(T1_contracted, self._all_leaves, root)
+
+        return True, T1_contracted
 
 class GraphSeeker:
     def __init__(self, graph: DiGraph, leaves: frozenset[int], score, validity):
