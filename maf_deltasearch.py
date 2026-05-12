@@ -13,12 +13,15 @@ class _NodeView:
     def __contains__(self, n):
         return n in self._nodes
 
+    def __getitem__(self, n):
+        return self._nodes[n]
+
 
 class DiGraph:
     def __init__(self):
         self._succ = {}
         self._pred = {}
-        self._node = set()
+        self._node = {}
 
     def __contains__(self, n):
         return n in self._node
@@ -32,14 +35,11 @@ class DiGraph:
     def __getitem__(self, n):
         return self._succ[n]
 
-    def _add_node(self, n):
+    def add_node(self, n):
         if n not in self._succ:
             self._succ[n] = {}
             self._pred[n] = {}
-            self._node.add(n)
-
-    def add_node(self, n):
-        self._add_node(n)
+            self._node[n] = {}
 
     def remove_node(self, n):
         for s in list(self._succ[n]):
@@ -48,11 +48,11 @@ class DiGraph:
             del self._succ[p][n]
         del self._succ[n]
         del self._pred[n]
-        self._node.discard(n)
+        del self._node[n]
 
     def add_edge(self, u, v):
-        self._add_node(u)
-        self._add_node(v)
+        self.add_node(u)
+        self.add_node(v)
         self._succ[u][v] = {}
         self._pred[v][u] = {}
 
@@ -93,7 +93,7 @@ class DiGraph:
 
     def copy(self):
         G = DiGraph()
-        G._node = set(self._node)
+        G._node = {n: dict(attrs) for n, attrs in self._node.items()}
         G._succ = {u: dict(nbrs) for u, nbrs in self._succ.items()}
         G._pred = {u: dict(preds) for u, preds in self._pred.items()}
         return G
@@ -101,7 +101,7 @@ class DiGraph:
 
 def create_empty_copy(G):
     H = DiGraph()
-    H._node = set(G._node)
+    H._node = {n: {} for n in G._node}
     H._succ = {n: {} for n in G._node}
     H._pred = {n: {} for n in G._node}
     return H
@@ -147,6 +147,96 @@ def remove_contract_rooted(T, leaves: frozenset, node):
         return child
     return node
 
+def _get_min(graph, node, leaves):
+    if node in leaves:
+        graph.nodes[node]["min"] = node
+        return node
+    
+    if graph.out_degree(node) == 0:
+        graph.nodes[node]["min"] = float('inf')
+        return float('inf')
+    
+    mini = float('inf')
+    for child in graph.successors(node):
+        mini = min(mini, _get_min(graph, child, leaves))
+    
+    graph.nodes[node]["min"] = mini
+    return mini
+    
+def find_contracted_root(graph, node, leaves):
+    found_leaves = 0
+    if node in leaves:
+        found_leaves = 1
+        return found_leaves, node
+    for child in graph.successors(node):
+        child_leaves, child_root = find_contracted_root(graph, child, leaves)
+        if child_leaves == len(leaves):
+            return child_leaves, child_root
+
+        found_leaves += child_leaves
+    return found_leaves, node
+
+def get_min(graph, leaves):
+    roots = [v for v in graph.nodes if graph.in_degree(v) == 0]
+    for root in roots:
+        _get_min(graph, root, leaves)
+
+def compare_trees(node1, T1, node2, T2, leaves):
+    if T1.nodes[node1]["min"] != T2.nodes[node2]["min"]:
+        return False
+
+    while True:
+        T1_out_deg = T1.out_degree(node1)
+        if T1_out_deg == 0:
+            break
+        if T1_out_deg == 1:
+            node1 = next(iter(T1.successors(node1)))
+        if T1_out_deg == 2:
+            node11, node12 = T1.successors(node1)
+            if T1.nodes[node11]["min"] != float('inf') and T1.nodes[node12]["min"] != float('inf'):
+                break
+            if T1.nodes[node11]["min"] != float('inf'):
+                node1 = node11
+                continue
+            if T1.nodes[node12]["min"] != float('inf'):
+                node1 = node12
+                continue
+            T1_out_deg = 0
+            break
+    while True:
+        T2_out_deg = T2.out_degree(node2)
+        if T2_out_deg == 0:
+            break
+        if T2_out_deg == 1:
+            node2 = next(iter(T2.successors(node2)))
+        if T2_out_deg == 2:
+            node21, node22 = T2.successors(node2)
+            if T2.nodes[node21]["min"] != float('inf') and T2.nodes[node22]["min"] != float('inf'):
+                break
+            if T2.nodes[node21]["min"] != float('inf'):
+                node2 = node21
+                continue
+            if T2.nodes[node22]["min"] != float('inf'):
+                node2 = node22
+                continue
+            T2_out_deg = 0
+            break
+            
+
+    if T1_out_deg == 0 and T2_out_deg == 0:
+        return True
+    
+    if T1_out_deg == 0 or T2_out_deg == 0:
+        return False
+    
+    # node11, node12 = T1.successors(node1)
+    # node21, node22 = T2.successors(node2)
+    if T1.nodes[node11]["min"] > T1.nodes[node12]["min"]:
+        node11, node12 = node12, node11
+    if T2.nodes[node21]["min"] > T2.nodes[node22]["min"]:
+        node21, node22 = node22, node21
+    
+    return compare_trees(node11, T1, node21, T2, leaves) and compare_trees(node12, T1, node22, T2, leaves)
 
 class NumComponentSpec:
     def __init__(self, graph: DiGraph, all_leaves: frozenset):
@@ -175,19 +265,18 @@ class AgreementSpec:
             root = remove_contract_rooted(T1_contracted, self._all_leaves, root)
             if root is not None:
                 nxt_roots.add(root)
+        get_min(T1_contracted, self._all_leaves)
         T2 = self._T2.copy()
         for T1_root in nxt_roots:
             T1_leaves = set(all_leaves_tree(T1_contracted, T1_root))
             T2_root = find_root(T2, next(iter(T1_leaves)))
-            T2_leaves = set(all_leaves_tree(T2, T2_root))
+            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves)
 
-            if not (T2_leaves >= T1_leaves):
+            if not (n_leaves == len(T1_leaves)):
                 return False, None
 
-            T2_removed = T2.copy()
-            T2_root = remove_contract_rooted(T2_removed, T1_leaves, T2_root)
-
-            if tree_to_newick(T1_contracted, root=T1_root) != tree_to_newick(T2_removed, root=T2_root):
+            _get_min(T2, T2_root, T1_leaves)
+            if not compare_trees(T1_root, T1_contracted, T2_root, T2, T1_leaves):
                 return False, None
 
             delete_subtree(T2, T1_leaves, T2_root)
