@@ -238,91 +238,64 @@ def compare_trees(node1, T1, node2, T2, leaves):
     
     return compare_trees(node11, T1, node21, T2, leaves) and compare_trees(node12, T1, node22, T2, leaves)
 
-class NumComponentSpec:
-    def __init__(self, graph: DiGraph, all_leaves: frozenset):
-        self._all_leaves = all_leaves
-
-    def __call__(self, graph: DiGraph) -> float:
-        return -len({find_root(graph, leaf) for leaf in self._all_leaves})
-
-
 def find_root(graph, node):
     while graph.in_degree(node) == 1:
         node = next(iter(graph.predecessors(node)))
     return node
 
-
-class AgreementSpec:
-    def __init__(self, T2: DiGraph, all_leaves: frozenset):
-        self._T2 = T2
-        self._all_leaves = all_leaves
-
-    def __call__(self, T1: DiGraph):
-        roots = [v for v in T1.nodes if T1.in_degree(v) == 0]
-        get_min(T1, self._all_leaves)
-        T2 = self._T2.copy()
-        for T1_root in roots:
-            T1_leaves = set(all_leaves_tree(T1, T1_root))
-            if not T1_leaves:
-                continue
-            T2_root = find_root(T2, next(iter(T1_leaves)))
-            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves)
-
-            if not (n_leaves == len(T1_leaves)):
-                return False, None
-
-            _get_min(T2, T2_root, T1_leaves)
-            if not compare_trees(T1_root, T1, T2_root, T2, T1_leaves):
-                return False, None
-
-            delete_subtree(T2, T1_leaves, T2_root)
-
-        T1_contracted = T1.copy()
-        roots = [v for v in T1_contracted.nodes if T1_contracted.in_degree(v) == 0]
-        for root in roots:
-            remove_contract_rooted(T1_contracted, self._all_leaves, root)
-
-        return True, T1_contracted
-
 class GraphSeeker:
-    def __init__(self, graph: DiGraph, leaves: frozenset[int], score, validity):
-        self.graph = graph
+    def __init__(self, T1: DiGraph, T2: DiGraph, leaves: frozenset[int]):
+        self.T1 = T1
+        self.T2 = T2
         self.leaves = leaves
-        self.score = score
-        self.valid = validity
-        self.result = create_empty_copy(self.graph)
-        self.best_score = self.score(self.result)
-        self.empty_score = self.best_score
+        self.result = create_empty_copy(self.T1)
+        self.best_cost = len(leaves)
         signal.signal(signal.SIGINT, self.exit)
         signal.signal(signal.SIGTERM, self.exit)
 
     def run(self):
-        c = list(self.graph.edges())
+        c = list(self.T1.edges())
         while True:
             n = 1
-            cur_soln = list()
-            cur_graph = create_empty_copy(self.graph)
-            cur_score = self.empty_score
+            cur_graph = create_empty_copy(self.T1)
+            cur_roots = set(self.leaves)
+            cur_cost = len(self.leaves)
             while n < len(c):
                 n = min(2*n, len(c))
                 k, m = divmod(len(c), n)
                 for i in range(n-1, -1, -1):
                     tst_subset = c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
-                    cs = cur_soln + tst_subset
                     cur_graph.add_edges_from(tst_subset)
-                    tst_score = self.score(cur_graph)
-                    if tst_score > cur_score:
-                        agreement, contracted_graph = self.valid(cur_graph)
+
+                    tst_roots = {find_root(cur_graph, root) for root in cur_roots}
+                    tst_cost = len(tst_roots)
+
+                    if tst_cost < cur_cost:
+                        get_min(cur_graph, self.leaves)
+                        T2 = self.T2.copy()
+                        agreement = True
+                        for T1_root in tst_roots:
+                            T1_leaves = set(all_leaves_tree(cur_graph, T1_root))
+                            T2_root = find_root(T2, next(iter(T1_leaves)))
+                            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves)
+                            if not (n_leaves == len(T1_leaves)):
+                                agreement = False
+                                break
+                            _get_min(T2, T2_root, T1_leaves)
+                            if not compare_trees(T1_root, cur_graph, T2_root, T2, T1_leaves):
+                                agreement = False
+                                break
+                            delete_subtree(T2, T1_leaves, T2_root)
                         if agreement:
-                            cur_score = tst_score
-                            cur_soln = cs
+                            cur_cost = tst_cost
+                            cur_roots = tst_roots
                             del c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
-                            if cur_score > self.best_score:
-                                self.result = contracted_graph
-                                self.best_score = cur_score
-                                continue
+                            if cur_cost < self.best_cost:
+                                self.result = cur_graph.copy()
+                                self.best_cost = cur_cost
+                            continue
                     cur_graph.remove_edges_from(tst_subset)
-            c = list(self.graph.edges())
+            c = list(self.T1.edges())
             random.shuffle(c)
 
     def prepare_solution(self, graph):
@@ -331,6 +304,7 @@ class GraphSeeker:
         for leaf in self.leaves:
             if leaf not in visited:
                 root = find_root(graph, leaf)
+                root = remove_contract_rooted(graph, self.leaves, root)
                 out_trees.append(tree_to_newick_print(graph, root=root))
                 visited.update(all_leaves_tree(graph, root))
         return "\n".join(out_trees)
@@ -444,7 +418,5 @@ if __name__ == '__main__':
     trees, n_leaves = read_input(sys.stdin)
     leaves = frozenset(range(1, n_leaves + 1))
     T1, T2 = trees[0], trees[1]
-    seeker = GraphSeeker(
-        T1, leaves, NumComponentSpec(T1, leaves), AgreementSpec(T2, leaves)
-    )
+    seeker = GraphSeeker(T1, T2, leaves)
     seeker.run()
