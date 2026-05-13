@@ -260,6 +260,8 @@ class GraphSeeker:
             cur_graph = create_empty_copy(self.T1)
             cur_roots = set(self.leaves)
             cur_cost = len(self.leaves)
+            root_leaves_map = {leaf: {leaf,} for leaf in self.leaves} # T1
+            leaf_root_map = {leaf: leaf for leaf in self.leaves}    # T2
             while n < len(c):
                 n = min(2*n, len(c))
                 k, m = divmod(len(c), n)
@@ -268,13 +270,19 @@ class GraphSeeker:
                     cur_graph.add_edges_from(tst_subset)
 
                     # tst_roots = {find_root(cur_graph, root) for root in cur_roots}
+                    tst_leaf_root_map = dict(leaf_root_map)
                     changed_roots = set()
                     tst_roots = set()
+                    tst_root_leaves_map = {}
                     for root in cur_roots:
                         new_root = find_root(cur_graph, root)
                         tst_roots.add(new_root)
                         if new_root != root:
                             changed_roots.add(new_root)
+                            tst_root_leaves_map.setdefault(new_root, set(root_leaves_map[root])).update(root_leaves_map[root])
+                        else:
+                            if root not in tst_root_leaves_map:
+                                tst_root_leaves_map[root] = set(root_leaves_map[root])
                     tst_cost = len(tst_roots)
 
                     if tst_cost < cur_cost:
@@ -282,25 +290,30 @@ class GraphSeeker:
                         T2 = self.T2.copy()
                         agreement = True
                         for T1_root in tst_roots - changed_roots:
-                            T1_leaves = set(all_leaves_tree(cur_graph, T1_root))
-                            T2_root = find_root(T2, next(iter(T1_leaves)))
-                            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves)
+                            T1_leaves =  tst_root_leaves_map[T1_root]
+                            T2_root = tst_leaf_root_map[next(iter(T1_leaves))]
                             delete_subtree(T2, T1_leaves, T2_root)
                         for T1_root in changed_roots:
-                            T1_leaves = set(all_leaves_tree(cur_graph, T1_root))
+                            T1_leaves =  tst_root_leaves_map[T1_root]
                             T2_root = find_root(T2, next(iter(T1_leaves)))
-                            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves)
-                            if not (n_leaves == len(T1_leaves)):
+                            T1_leaves_roots = set(tst_leaf_root_map[leaf] for leaf in T1_leaves)
+                            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves_roots)
+                            if not (n_leaves == len(T1_leaves_roots)):
                                 agreement = False
                                 break
                             _get_min(T2, T2_root, T1_leaves)
                             if not compare_trees(T1_root, cur_graph, T2_root, T2, T1_leaves):
                                 agreement = False
                                 break
+
+                            for leaf in T1_leaves:
+                                tst_leaf_root_map[leaf] = T2_root
                             delete_subtree(T2, T1_leaves, T2_root)
                         if agreement:
                             cur_cost = tst_cost
                             cur_roots = tst_roots
+                            root_leaves_map = tst_root_leaves_map
+                            leaf_root_map = tst_leaf_root_map
                             del c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
                             if cur_cost < self.best_cost:
                                 self.result = cur_graph.copy()
