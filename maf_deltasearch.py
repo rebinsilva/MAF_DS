@@ -267,14 +267,26 @@ class GraphSeeker:
                     tst_subset = c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
                     cur_graph.add_edges_from(tst_subset)
 
-                    tst_roots = {find_root(cur_graph, root) for root in cur_roots}
+                    # tst_roots = {find_root(cur_graph, root) for root in cur_roots}
+                    changed_roots = set()
+                    tst_roots = set()
+                    for root in cur_roots:
+                        new_root = find_root(cur_graph, root)
+                        tst_roots.add(new_root)
+                        if new_root != root:
+                            changed_roots.add(new_root)
                     tst_cost = len(tst_roots)
 
                     if tst_cost < cur_cost:
                         get_min(cur_graph, self.leaves)
                         T2 = self.T2.copy()
                         agreement = True
-                        for T1_root in tst_roots:
+                        for T1_root in tst_roots - changed_roots:
+                            T1_leaves = set(all_leaves_tree(cur_graph, T1_root))
+                            T2_root = find_root(T2, next(iter(T1_leaves)))
+                            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves)
+                            delete_subtree(T2, T1_leaves, T2_root)
+                        for T1_root in changed_roots:
                             T1_leaves = set(all_leaves_tree(cur_graph, T1_root))
                             T2_root = find_root(T2, next(iter(T1_leaves)))
                             n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves)
