@@ -3,19 +3,9 @@ import random
 import signal
 import sys
 
-class Node:
-    __slots__ = ('id', 'parent', 'children', 'attrs')
-
-    def __init__(self, node_id):
-        self.id = node_id
-        self.parent = None   # Node | None
-        self.children = []   # list[Node], max len 2
-        self.attrs = {}
-
-
 class _NodeView:
     def __init__(self, nodes):
-        self._nodes = nodes  # dict[int, Node]
+        self._nodes = nodes
 
     def __iter__(self):
         return iter(self._nodes)
@@ -24,47 +14,52 @@ class _NodeView:
         return n in self._nodes
 
     def __getitem__(self, n):
-        return self._nodes[n].attrs
+        return self._nodes[n]
 
 
 class RootedBinaryForest:
     def __init__(self):
-        self._nodes = {}   # int -> Node
-        self.roots = set() # set of node IDs with no parent
+        self._children = {}   # node -> list (len 0, 1, or 2)
+        self._parent = {}     # node -> parent node or None
+        self._node = {}       # node -> attribute dict
+        self.roots = set()    # nodes with no parent
 
     def __contains__(self, n):
-        return n in self._nodes
+        return n in self._node
 
     def __iter__(self):
-        return iter(self._nodes)
+        return iter(self._node)
 
     def __len__(self):
-        return len(self._nodes)
+        return len(self._node)
 
     def __getitem__(self, n):
-        return [c.id for c in self._nodes[n].children]
+        return self._children[n]
 
     def add_node(self, n):
-        if n not in self._nodes:
-            self._nodes[n] = Node(n)
+        if n not in self._node:
+            self._children[n] = []
+            self._parent[n] = None
+            self._node[n] = {}
             self.roots.add(n)
 
     def remove_node(self, n):
-        node = self._nodes.pop(n)
-        if node.parent is not None:
-            node.parent.children.remove(node)
-        for c in node.children:
-            c.parent = None
-            self.roots.add(c.id)
+        p = self._parent[n]
+        if p is not None:
+            self._children[p].remove(n)
+        for c in self._children[n]:
+            self._parent[c] = None
+            self.roots.add(c)
         self.roots.discard(n)
+        del self._children[n]
+        del self._parent[n]
+        del self._node[n]
 
     def add_edge(self, u, v):
         self.add_node(u)
         self.add_node(v)
-        u_node = self._nodes[u]
-        v_node = self._nodes[v]
-        u_node.children.append(v_node)
-        v_node.parent = u_node
+        self._children[u].append(v)
+        self._parent[v] = u
         self.roots.discard(v)
 
     def add_edges_from(self, edges):
@@ -72,98 +67,93 @@ class RootedBinaryForest:
             self.add_edge(u, v)
 
     def remove_edge(self, u, v):
-        u_node = self._nodes[u]
-        v_node = self._nodes[v]
-        u_node.children.remove(v_node)
-        v_node.parent = None
+        self._children[u].remove(v)
+        self._parent[v] = None
         self.roots.add(v)
 
     def remove_edges_from(self, edges):
         for u, v in edges:
-            if u in self._nodes and v in self._nodes:
-                v_node = self._nodes[v]
-                if v_node.parent is self._nodes[u]:
-                    self.remove_edge(u, v)
+            if u in self._children and v in self._children[u]:
+                self.remove_edge(u, v)
 
     def successors(self, n):
-        return (c.id for c in self._nodes[n].children)
+        return iter(self._children[n])
 
     def predecessors(self, n):
-        p = self._nodes[n].parent
+        p = self._parent[n]
         if p is not None:
-            yield p.id
+            yield p
 
     def parent(self, n):
-        p = self._nodes[n].parent
-        return p.id if p is not None else None
+        return self._parent[n]
 
     def children(self, n):
-        return [c.id for c in self._nodes[n].children]
+        return self._children[n]
 
     def out_degree(self, n):
-        return len(self._nodes[n].children)
+        return len(self._children[n])
 
     def in_degree(self, n=None):
         if n is not None:
-            return 0 if self._nodes[n].parent is None else 1
-        return ((n, 0 if node.parent is None else 1) for n, node in self._nodes.items())
+            return 0 if self._parent[n] is None else 1
+        return ((v, 0 if p is None else 1) for v, p in self._parent.items())
 
     @property
     def nodes(self):
-        return _NodeView(self._nodes)
+        return _NodeView(self._node)
 
     def edges(self):
-        return ((u, c.id) for u, node in self._nodes.items() for c in node.children)
+        return ((u, v) for u, cs in self._children.items() for v in cs)
+
+    def delete_subtree(self, source):
+        for c in list(self.successors(source)):
+            self.delete_subtree(c)
+        self.remove_node(source)
 
     def split_subtree(self, source):
-        source_node = self._nodes[source]
-        parent_node = source_node.parent
-        if parent_node is not None:
-            parent_node.children.remove(source_node)
-            source_node.parent = None
+        parent = self._parent[source]
+        if parent is not None:
+            self._children[parent].remove(source)
+            self._parent[source] = None
         self.roots.discard(source)
         new_forest = RootedBinaryForest()
-        stack = [source_node]
+        stack = [source]
         while stack:
-            node = stack.pop()
-            self._nodes.pop(node.id)
-            new_forest._nodes[node.id] = node
-            stack.extend(node.children)
+            n = stack.pop()
+            new_forest._children[n] = self._children.pop(n)
+            new_forest._parent[n] = self._parent.pop(n)
+            new_forest._node[n] = self._node.pop(n)
+            stack.extend(new_forest._children[n])
         new_forest.roots.add(source)
-        return new_forest, parent_node.id if parent_node is not None else None
-    
+        return new_forest, parent
+
     def add_subtree(self, subtree, parent=None):
-        self._nodes.update(subtree._nodes)
         assert len(subtree.roots) == 1
         root = next(iter(subtree.roots))
+        self._children.update(subtree._children)
+        self._parent.update(subtree._parent)
+        self._node.update(subtree._node)
         if parent is None:
             self.roots.add(root)
         else:
-            parent_node = self._nodes[parent]
-            parent_node.children.append(self._nodes[root])
-            self._nodes[root].parent = parent_node
+            self._children[parent].append(root)
+            self._parent[root] = parent
 
     def copy(self):
         G = RootedBinaryForest()
-        id_to_new = {}
-        for n, node in self._nodes.items():
-            new_node = Node(n)
-            new_node.attrs = dict(node.attrs)
-            G._nodes[n] = new_node
-            id_to_new[n] = new_node
-        for n, node in self._nodes.items():
-            new_node = id_to_new[n]
-            if node.parent is not None:
-                new_node.parent = id_to_new[node.parent.id]
-            new_node.children = [id_to_new[c.id] for c in node.children]
+        G._node = {n: dict(attrs) for n, attrs in self._node.items()}
+        G._children = {n: list(cs) for n, cs in self._children.items()}
+        G._parent = dict(self._parent)
         G.roots = set(self.roots)
         return G
 
 
 def create_empty_copy(G):
     H = RootedBinaryForest()
-    for n in G._nodes:
-        H._nodes[n] = Node(n)
+    for n in G._node:
+        H._children[n] = []
+        H._parent[n] = None
+        H._node[n] = {}
         H.roots.add(n)
     return H
 
@@ -327,24 +317,203 @@ def restore_subtree(graph, subtree_replace_map):
         graph.add_subtree(tree, parent=parent)
     return graph
 
+
+def _find_chain_in_tree(T, start_leaf, leaves, visited=None):
+    G1 = T._parent[start_leaf]
+    if G1 is None or len(T._children[G1]) != 2:
+        return None
+    other = T._children[G1][0] if T._children[G1][1] == start_leaf else T._children[G1][1]
+    # If other is itself a chain node (1 leaf child + 1 internal child), start_leaf is not c2
+    if other not in leaves:
+        other_ch = T._children.get(other, [])
+        if len(other_ch) == 2:
+            has_leaf = any(c in leaves for c in other_ch)
+            has_int = any(c not in leaves for c in other_ch)
+            if has_leaf and has_int:
+                return None
+        else:
+            return None
+    chain = [start_leaf]
+    node = G1
+    while True:
+        par = T._parent[node]
+        if par is None:
+            break
+        par_ch = T._children[par]
+        if len(par_ch) != 2:
+            break
+        sib = par_ch[0] if par_ch[1] == node else par_ch[1]
+        if sib not in leaves:
+            break
+        if visited is not None and sib in visited:
+            break
+        chain.append(sib)
+        node = par
+    return chain
+
+
+def _verify_chain_in_tree(T, chain):
+    c2 = chain[0]
+    G1 = T._parent[c2]
+    if G1 is None or len(T._children[G1]) != 2 or c2 not in T._children[G1]:
+        return False
+    node = G1
+    for ci in chain[1:]:
+        par = T._parent[node]
+        if par is None:
+            return False
+        par_ch = T._children[par]
+        if len(par_ch) != 2:
+            return False
+        other = par_ch[0] if par_ch[1] == node else par_ch[1]
+        if other != ci:
+            return False
+        node = par
+    return True
+
+
+def find_common_chains(T1, T2, leaves):
+    visited = set()
+    for leaf in leaves:
+        if leaf in visited:
+            continue
+        chain = _find_chain_in_tree(T1, leaf, leaves, visited)
+        if chain is None or len(chain) < 3:
+            visited.add(leaf)
+            continue
+        if _verify_chain_in_tree(T2, chain):
+            visited.update(chain)
+            yield chain
+        else:
+            visited.add(leaf)
+
+
+def _truncate_chain(T, chain):
+    G1 = T._parent[chain[0]]
+    G2 = T._parent[G1]
+
+    chain_top = G2
+    for _ in chain[2:]:
+        chain_top = T._parent[chain_top]
+    above = T._parent[chain_top]
+    if above is not None:
+        T._children[above].remove(chain_top)
+        T._parent[chain_top] = None
+    else:
+        T.roots.discard(chain_top)
+
+    G3 = T._parent[G2]
+    if G3 is not None:
+        T._children[G3].remove(G2)
+        T._parent[G2] = None
+
+    node = G3
+    for ci in chain[2:]:
+        next_node = T._parent[node] if node != chain_top else None
+        T.roots.discard(ci)
+        del T._children[ci]
+        del T._parent[ci]
+        del T._node[ci]
+        T.roots.discard(node)
+        del T._children[node]
+        del T._parent[node]
+        del T._node[node]
+        node = next_node
+
+    if above is not None:
+        T._children[above].append(G2)
+        T._parent[G2] = above
+    else:
+        T.roots.add(G2)
+
+
+def chain_reduce(T1, T2, leaves):
+    chain_map = {}
+    chains = list(find_common_chains(T1, T2, leaves))
+    for chain in chains:
+        _truncate_chain(T1, chain)
+        _truncate_chain(T2, chain)
+        chain_map[chain[1]] = chain[2:]
+    return T1, T2, chain_map
+
+
+def restore_chain(graph, chain_map):
+    next_id = [min((n for n in graph._node if n < 0), default=0) - 1]
+
+    def fresh():
+        nid = next_id[0]
+        next_id[0] -= 1
+        return nid
+
+    for c3, removed in chain_map.items():
+        p2 = graph._parent.get(c3)
+        top = p2 if p2 is not None else c3
+        top_parent = graph._parent.get(top)
+
+        for ci in removed:
+            new_node = fresh()
+            graph._children[new_node] = []
+            graph._parent[new_node] = None
+            graph._node[new_node] = {}
+            graph._children[ci] = []
+            graph._parent[ci] = None
+            graph._node[ci] = {}
+
+            if top_parent is not None:
+                graph._children[top_parent].remove(top)
+                graph._parent[top] = None
+            else:
+                graph.roots.discard(top)
+
+            graph._children[new_node] = [top, ci]
+            graph._parent[top] = new_node
+            graph._parent[ci] = new_node
+
+            if top_parent is not None:
+                graph._children[top_parent].append(new_node)
+                graph._parent[new_node] = top_parent
+            else:
+                graph.roots.add(new_node)
+
+            top = new_node
+
+    return graph
+
+
 class GraphSeeker:
     def __init__(self, T1: RootedBinaryForest, T2: RootedBinaryForest, leaves: frozenset[int]):
         self.T1 = T1
         self.T2 = T2
-        self.subtree_replace_map = {}
-        self.T1, self.T2, self.subtree_replace_map = subtree_reduce(T1, T2, leaves)
         self.orig_leaves = frozenset(leaves)
-        to_remove = set()
-        for leaf, tree in self.subtree_replace_map.items():
-            to_remove.update(all_leaves_tree(tree, next(iter(tree.roots))))
-            to_remove.discard(leaf)
-        self.leaves = frozenset(leaves - to_remove)
+        self.reduction_stack = []  # list of (subtree_replace_map, chain_replace_map)
+        self.leaves = frozenset(leaves)
+        while True:
+            T1_new, T2_new, srmap = subtree_reduce(self.T1, self.T2, self.leaves)
+            to_remove = set()
+            for leaf, tree in srmap.items():
+                to_remove.update(all_leaves_tree(tree, next(iter(tree.roots))))
+                to_remove.discard(leaf)
+            leaves_after_sub = frozenset(self.leaves - to_remove)
+            T1_new, T2_new, crmap = chain_reduce(T1_new, T2_new, leaves_after_sub)
+            chain_removed = set()
+            for removed in crmap.values():
+                chain_removed.update(removed)
+            leaves_after_chain = frozenset(leaves_after_sub - chain_removed)
+            if not srmap and not crmap:
+                break
+            self.T1, self.T2 = T1_new, T2_new
+            self.leaves = leaves_after_chain
+            self.reduction_stack.append((srmap, crmap))
         self.result = create_empty_copy(self.T1)
         self.best_cost = len(leaves)
         signal.signal(signal.SIGINT, self.exit)
         signal.signal(signal.SIGTERM, self.exit)
 
     def run(self):
+        if len(self.leaves) == 1:
+            self.result = self.T1.copy()
+            self.best_cost = 1
+            self.exit(None, None)
         c = list(self.T1.edges())
         while True:
             n = 1
@@ -404,7 +573,9 @@ class GraphSeeker:
     def prepare_solution(self, graph):
         visited = set()
         out_trees = []
-        graph = restore_subtree(graph, self.subtree_replace_map)
+        for srmap, crmap in reversed(self.reduction_stack):
+            graph = restore_chain(graph, crmap)
+            graph = restore_subtree(graph, srmap)
         for leaf in self.orig_leaves:
             if leaf not in visited:
                 root = find_root(graph, leaf)
