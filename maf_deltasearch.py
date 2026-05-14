@@ -19,10 +19,10 @@ class _NodeView:
 
 class RootedBinaryForest:
     def __init__(self):
-        self._children = {}   # node -> list (len 0, 1, or 2)
-        self._parent = {}     # node -> parent node or None
-        self._node = {}       # node -> attribute dict
-        self.roots = set()    # nodes with no parent
+        self._children = {}   
+        self._parent = {}     
+        self._node = {}
+        self.roots = set()    
 
     def __contains__(self, n):
         return n in self._node
@@ -279,8 +279,6 @@ def compare_trees(node1, T1, node2, T2, leaves):
     if T1_out_deg == 0 or T2_out_deg == 0:
         return False
     
-    # node11, node12 = T1.successors(node1)
-    # node21, node22 = T2.successors(node2)
     if T1.nodes[node11]["min"] > T1.nodes[node12]["min"]:
         node11, node12 = node12, node11
     if T2.nodes[node21]["min"] > T2.nodes[node22]["min"]:
@@ -323,7 +321,6 @@ def _find_chain_in_tree(T, start_leaf, leaves, visited=None):
     if G1 is None or len(T._children[G1]) != 2:
         return None
     other = T._children[G1][0] if T._children[G1][1] == start_leaf else T._children[G1][1]
-    # If other is itself a chain node (1 leaf child + 1 internal child), start_leaf is not c2
     if other not in leaves:
         other_ch = T._children.get(other, [])
         if len(other_ch) == 2:
@@ -437,8 +434,10 @@ def chain_reduce(T1, T2, leaves):
     return T1, T2, chain_map
 
 
-def restore_chain(graph, chain_map):
-    next_id = [min((n for n in graph._node if n < 0), default=0) - 1]
+def restore_chain(graph, chain_map, min_id=0):
+    next_id = [min((n for n in graph._node if n < 0), default=min_id) - 1]
+    if min_id < next_id[0]:
+        next_id[0] = min_id - 1
 
     def fresh():
         nid = next_id[0]
@@ -480,12 +479,111 @@ def restore_chain(graph, chain_map):
     return graph
 
 
+def _find_pendant_3_chain_for_x3(T, x3, leaves):
+    """If x3 is the top leaf of a pendant 3-chain in T, return (x1, x2) cherry pair, else None."""
+    G2 = T._parent.get(x3)
+    if G2 is None or len(T._children.get(G2, [])) != 2:
+        return None
+    ch = T._children[G2]
+    G1 = ch[0] if ch[1] == x3 else ch[1]
+    if G1 in leaves:
+        return None
+    G1_ch = T._children.get(G1, [])
+    if len(G1_ch) != 2:
+        return None
+    a, b = G1_ch
+    if a in leaves and b in leaves:
+        return (a, b)
+    return None
+
+
+def find_32_chains(T1, T2, leaves):
+    visited = set()
+    for x3 in leaves:
+        if x3 in visited:
+            continue
+        found = False
+        for Ta, Tb in [(T1, T2), (T2, T1)]:
+            pair = _find_pendant_3_chain_for_x3(Ta, x3, leaves)
+            if pair is None:
+                continue
+            x1, x2 = pair
+            if x1 in visited or x2 in visited:
+                continue
+            P3 = Tb._parent.get(x3)
+            if P3 is None or len(Tb._children.get(P3, [])) != 2:
+                continue
+            Tb_ch = Tb._children[P3]
+            other = Tb_ch[0] if Tb_ch[1] == x3 else Tb_ch[1]
+            if other in (x1, x2):
+                visited.update([x1, x2, x3])
+                yield (x1, x2, x3, other)
+                found = True
+                break
+        if not found:
+            visited.add(x3)
+
+
+def _remove_leaf_and_suppress(T, leaf):
+    p = T._parent.get(leaf)
+    T.roots.discard(leaf)
+    del T._children[leaf]
+    del T._parent[leaf]
+    del T._node[leaf]
+    if p is None:
+        return
+    T._children[p].remove(leaf)
+    if len(T._children[p]) == 1:
+        child = T._children[p][0]
+        gp = T._parent[p]
+        if gp is not None:
+            idx = T._children[gp].index(p)
+            T._children[gp][idx] = child
+            T._parent[child] = gp
+        else:
+            T.roots.discard(p)
+            T.roots.add(child)
+            T._parent[child] = None
+        del T._children[p]
+        del T._parent[p]
+        del T._node[p]
+        T.roots.discard(p)
+
+
+def chain_32_reduce(T1, T2, leaves):
+    chain_32_map = {}
+    return T1, T2, chain_32_map
+    chains = list(find_32_chains(T1, T2, leaves))
+    for x1, x2, _, xi in chains:
+        xj = x2 if xi == x1 else x1
+        _remove_leaf_and_suppress(T1, xj)
+        _remove_leaf_and_suppress(T2, xj)
+        chain_32_map[xj] = xi
+    return T1, T2, chain_32_map
+
+
+def restore_32chain(graph, chain_32_map):
+    for xj in chain_32_map:
+        if xj in graph._node:
+            old_parent = graph._parent.get(xj)
+            if old_parent is not None:
+                if xj in graph._children[old_parent]:
+                    graph._children[old_parent].remove(xj)
+            else:
+                graph.roots.discard(xj)
+        graph._children[xj] = []
+        graph._parent[xj] = None
+        graph._node[xj] = {}
+        graph.roots.add(xj)
+    return graph
+
+
 class GraphSeeker:
     def __init__(self, T1: RootedBinaryForest, T2: RootedBinaryForest, leaves: frozenset[int]):
         self.T1 = T1
         self.T2 = T2
         self.orig_leaves = frozenset(leaves)
-        self.reduction_stack = []  # list of (subtree_replace_map, chain_replace_map)
+        self.reduction_stack = []  # list of (subtree_replace_map, chain_replace_map, chain_32_map)
         self.leaves = frozenset(leaves)
         while True:
             T1_new, T2_new, srmap = subtree_reduce(self.T1, self.T2, self.leaves)
@@ -499,12 +597,15 @@ class GraphSeeker:
             for removed in crmap.values():
                 chain_removed.update(removed)
             leaves_after_chain = frozenset(leaves_after_sub - chain_removed)
-            if not srmap and not crmap:
+            T1_new, T2_new, c32map = chain_32_reduce(T1_new, T2_new, leaves_after_chain)
+            leaves_after_32 = frozenset(leaves_after_chain - c32map.keys())
+            if not srmap and not crmap and not c32map:
                 break
             self.T1, self.T2 = T1_new, T2_new
-            self.leaves = leaves_after_chain
-            self.reduction_stack.append((srmap, crmap))
+            self.leaves = leaves_after_32
+            self.reduction_stack.append((srmap, crmap, c32map))
         self.result = create_empty_copy(self.T1)
+        self.result_string = self.prepare_solution(self.result)
         self.best_cost = len(leaves)
         signal.signal(signal.SIGINT, self.exit)
         signal.signal(signal.SIGTERM, self.exit)
@@ -564,6 +665,7 @@ class GraphSeeker:
                             del c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
                             if cur_cost < self.best_cost:
                                 self.result = cur_graph.copy()
+                                self.result_string = self.prepare_solution(self.result)
                                 self.best_cost = cur_cost
                             continue
                     cur_graph.remove_edges_from(tst_subset)
@@ -573,8 +675,13 @@ class GraphSeeker:
     def prepare_solution(self, graph):
         visited = set()
         out_trees = []
-        for srmap, crmap in reversed(self.reduction_stack):
-            graph = restore_chain(graph, crmap)
+        all_subtree_min = min(
+            (n for srmap, *_ in self.reduction_stack for tree in srmap.values() for n in tree._node if n < 0),
+            default=0
+        )
+        for srmap, crmap, c32map in reversed(self.reduction_stack):
+            graph = restore_32chain(graph, c32map)
+            graph = restore_chain(graph, crmap, min_id=all_subtree_min)
             graph = restore_subtree(graph, srmap)
         for leaf in self.orig_leaves:
             if leaf not in visited:
@@ -586,7 +693,8 @@ class GraphSeeker:
 
     def exit(self, signum, frame):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        print(self.prepare_solution(self.result))
+        # print(self.prepare_solution(self.result))
+        print(self.result_string)
         sys.exit(0)
 
 
@@ -736,6 +844,10 @@ def find_maximal_common_pendants(T1, T2, leaves):
 if __name__ == '__main__':
     random.seed(42)
     trees, n_leaves = read_input(sys.stdin)
+    if len(trees) > 2:
+        for leaf in range(1, n_leaves + 1):
+            print(str(leaf)+";")
+        sys.exit(0)
     leaves = frozenset(range(1, n_leaves + 1))
     T1, T2 = trees[0], trees[1]
     seeker = GraphSeeker(T1, T2, leaves)
