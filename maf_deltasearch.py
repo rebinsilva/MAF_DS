@@ -16,12 +16,13 @@ class _NodeView:
     def __getitem__(self, n):
         return self._nodes[n]
 
-
-class DiGraph:
+class RootedBinaryForest:
     def __init__(self):
-        self._succ = {}
-        self._pred = {}
-        self._node = {}
+        # TODO: Change the following after full migration to this class
+        self._children = {}   # node -> list (len 0, 1, or 2)
+        self._parent = {}     # node -> parent node or None
+        self._node = {}       # node -> attribute dict
+        self.roots = set()    # nodes with no parent
 
     def __contains__(self, n):
         return n in self._node
@@ -33,95 +34,131 @@ class DiGraph:
         return len(self._node)
 
     def __getitem__(self, n):
-        return self._succ[n]
+        return self._children[n]
 
     def add_node(self, n):
-        if n not in self._succ:
-            self._succ[n] = {}
-            self._pred[n] = {}
+        if n not in self._node:
+            self._children[n] = []
+            self._parent[n] = None
             self._node[n] = {}
+            self.roots.add(n)
 
     def remove_node(self, n):
-        for s in list(self._succ[n]):
-            del self._pred[s][n]
-        for p in list(self._pred[n]):
-            del self._succ[p][n]
-        del self._succ[n]
-        del self._pred[n]
+        p = self._parent[n]
+        if p is not None:
+            self._children[p].remove(n)
+        for c in self._children[n]:
+            self._parent[c] = None
+            self.roots.add(c)
+        self.roots.discard(n)
+        del self._children[n]
+        del self._parent[n]
         del self._node[n]
 
     def add_edge(self, u, v):
         self.add_node(u)
         self.add_node(v)
-        self._succ[u][v] = {}
-        self._pred[v][u] = {}
+        self._children[u].append(v)
+        self._parent[v] = u
+        self.roots.discard(v)
 
     def add_edges_from(self, edges):
-        for e in edges:
-            self.add_edge(e[0], e[1])
+        for u, v in edges:
+            self.add_edge(u, v)
 
     def remove_edge(self, u, v):
-        del self._succ[u][v]
-        del self._pred[v][u]
+        self._children[u].remove(v)
+        self._parent[v] = None
+        self.roots.add(v)
 
     def remove_edges_from(self, edges):
-        for e in edges:
-            u, v = e[0], e[1]
-            if u in self._succ and v in self._succ[u]:
+        for u, v in edges:
+            if u in self._children and v in self._children[u]:
                 self.remove_edge(u, v)
 
     def successors(self, n):
-        return iter(self._succ[n])
+        return iter(self._children[n])
 
     def predecessors(self, n):
-        return iter(self._pred[n])
+        p = self._parent[n]
+        if p is not None:
+            yield p
+
+    def parent(self, n):
+        return self._parent[n]
+
+    def children(self, n):
+        return self._children[n]
 
     def out_degree(self, n):
-        return len(self._succ[n])
+        return len(self._children[n])
 
     def in_degree(self, n=None):
         if n is not None:
-            return len(self._pred[n])
-        return ((v, len(p)) for v, p in self._pred.items())
+            return 0 if self._parent[n] is None else 1
+        return ((v, 0 if p is None else 1) for v, p in self._parent.items())
 
     @property
     def nodes(self):
         return _NodeView(self._node)
 
     def edges(self):
-        return ((u, v) for u, nbrs in self._succ.items() for v in nbrs)
+        return ((u, v) for u, cs in self._children.items() for v in cs)
+
+    def relabel_node(self, old, new):
+        self._node[new] = self._node.pop(old)
+        self._children[new] = self._children.pop(old)
+        self._parent[new] = self._parent.pop(old)
+        if old in self.roots:
+            self.roots.discard(old)
+            self.roots.add(new)
+        p = self._parent[new]
+        if p is not None:
+            cs = self._children[p]
+            cs[cs.index(old)] = new
+        for c in self._children[new]:
+            self._parent[c] = new
+    
+    def delete_subtree(self, source):
+        children = list(self.successors(source))
+        for v in children:
+            self.delete_subtree(v)
+        self.remove_node(source)
 
     def copy(self):
-        G = DiGraph()
+        G = RootedBinaryForest()
         G._node = {n: dict(attrs) for n, attrs in self._node.items()}
-        G._succ = {u: dict(nbrs) for u, nbrs in self._succ.items()}
-        G._pred = {u: dict(preds) for u, preds in self._pred.items()}
+        G._children = {n: list(cs) for n, cs in self._children.items()}
+        G._parent = dict(self._parent)
+        G.roots = set(self.roots)
         return G
 
 
 def create_empty_copy(G):
-    H = DiGraph()
-    H._node = {n: {} for n in G._node}
-    H._succ = {n: {} for n in G._node}
-    H._pred = {n: {} for n in G._node}
+    H = RootedBinaryForest()
+    for n in G._node:
+        H._children[n] = []
+        H._parent[n] = None
+        H._node[n] = {}
+        H.roots.add(n)
     return H
 
 
 def all_leaves_tree(G, source):
     if source > 0:
         yield source
-    for v in G._succ[source]:
+    for v in G.successors(source):
         yield from all_leaves_tree(G, v)
 
 
-def delete_subtree(G, leaves, source):
+def delete_subtree_leaves(G, leaves, source):
     if source in leaves:
         G.remove_node(source)
         return True
-    children = list(G._succ[source])
+    children = list(G.successors(source))
     flag = False
     for v in children:
-        if delete_subtree(G, leaves, v):
+        if delete_subtree_leaves(G, leaves, v):
             flag = True
     if flag:
         G.remove_node(source)
@@ -140,9 +177,9 @@ def remove_contract_rooted(T, leaves: frozenset, node):
         return None
     elif out_deg == 1:
         child = next(iter(T.successors(node)))
-        preds = list(T.predecessors(node))
-        if preds:
-            T.add_edge(preds[0], child)
+        p = T.parent(node)
+        if p is not None:
+            T.add_edge(p, child)
         T.remove_node(node)
         return child
     return node
@@ -177,8 +214,7 @@ def find_contracted_root(graph, node, leaves):
     return found_leaves, node
 
 def get_min(graph, leaves):
-    roots = [v for v in graph.nodes if graph.in_degree(v) == 0]
-    for root in roots:
+    for root in graph.roots:
         _get_min(graph, root, leaves)
 
 def compare_trees(node1, T1, node2, T2, leaves):
@@ -239,12 +275,12 @@ def compare_trees(node1, T1, node2, T2, leaves):
     return compare_trees(node11, T1, node21, T2, leaves) and compare_trees(node12, T1, node22, T2, leaves)
 
 def find_root(graph, node):
-    while graph.in_degree(node) == 1:
-        node = next(iter(graph.predecessors(node)))
+    while graph.parent(node) is not None:
+        node = graph.parent(node)
     return node
 
 class GraphSeeker:
-    def __init__(self, T1: DiGraph, T2: DiGraph, leaves: frozenset[int]):
+    def __init__(self, T1: RootedBinaryForest, T2: RootedBinaryForest, leaves: frozenset[int]):
         self.T1 = T1
         self.T2 = T2
         self.leaves = leaves
@@ -285,7 +321,7 @@ class GraphSeeker:
                             T1_leaves = set(all_leaves_tree(cur_graph, T1_root))
                             T2_root = find_root(T2, next(iter(T1_leaves)))
                             n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves)
-                            delete_subtree(T2, T1_leaves, T2_root)
+                            delete_subtree_leaves(T2, T1_leaves, T2_root)
                         for T1_root in changed_roots:
                             T1_leaves = set(all_leaves_tree(cur_graph, T1_root))
                             T2_root = find_root(T2, next(iter(T1_leaves)))
@@ -297,7 +333,7 @@ class GraphSeeker:
                             if not compare_trees(T1_root, cur_graph, T2_root, T2, T1_leaves):
                                 agreement = False
                                 break
-                            delete_subtree(T2, T1_leaves, T2_root)
+                            delete_subtree_leaves(T2, T1_leaves, T2_root)
                         if agreement:
                             cur_cost = tst_cost
                             cur_roots = tst_roots
@@ -356,9 +392,8 @@ def tree_to_newick(g, root=None):
 
 def _tree_to_newick(g, root=None):
     if root is None:
-        roots = [n for n, d in g.in_degree() if d == 0]
-        assert len(roots) == 1
-        root = roots[0]
+        assert len(g.roots) == 1
+        root = next(iter(g.roots))
     if len(g[root]) == 0:
         return (str(root), root)
     subgs = sorted((_tree_to_newick(g, root=child) for child in g[root]), key=lambda x: x[1])
@@ -383,9 +418,9 @@ def tree_to_newick_print(g, root):
     return ''.join(result)
 
 
-def parse_newick_to_digraph(newick_str: str) -> DiGraph:
+def parse_newick_to_digraph(newick_str: str) -> RootedBinaryForest:
     newick_str = newick_str.strip().rstrip(";")
-    G = DiGraph()
+    G = RootedBinaryForest()
     stack = []
     node_id = -1
     current_parent = None
@@ -424,6 +459,76 @@ def parse_newick_to_digraph(newick_str: str) -> DiGraph:
             token += char
 
     return G
+
+
+def find_maximal_common_pendants(T1, T2, leaves):
+    visited = set()
+    get_min(T1, leaves)
+    get_min(T2, leaves)
+    for leaf in leaves:
+        if leaf in visited:
+            continue
+        node1 = leaf
+        node2 = leaf
+        while T1.parent(node1) is not None and T2.parent(node2) is not None:
+            pred1 = T1.parent(node1)
+            pred2 = T2.parent(node2)
+
+            children1 = list(T1.successors(pred1))
+            children2 = list(T2.successors(pred2))
+            mismatch = False
+            if len(children1) == len(children2):
+                assert len(children1) == 2
+                node11, node12 = children1
+                node21, node22 = children2
+                if node11 != node1:
+                    node11, node12 = node12, node11
+                if node21 != node2:
+                    node21, node22 = node22, node21
+                if not compare_trees(node12, T1, node22, T2, leaves):
+                    mismatch = True
+            else:
+                mismatch = True
+
+            if mismatch:
+                covered_leaves = frozenset(all_leaves_tree(T1, node1))
+                visited.update(covered_leaves)
+                if node1 not in leaves:
+                    yield node1, node2, covered_leaves
+                break
+            else:
+                node1 = pred1
+                node2 = pred2
+        else:
+            covered_leaves = frozenset(all_leaves_tree(T1, node1))
+            visited.update(covered_leaves)
+            if node1 not in leaves:
+                yield node1, node2, covered_leaves
+
+def delete_subtree(G, source):
+    children = list(G.successors(source))
+    for v in children:
+        delete_subtree(G, v)
+    G.remove_node(source)
+
+def reduce(T1, T2, leaves):
+    subtree_replace_map = {}
+    reduced = True
+    while reduced:
+        reduced = False
+        for node1, node2, covered_leaves in find_maximal_common_pendants(T1, T2, leaves):
+            reduced = True
+            replacement_leaf = next(iter(covered_leaves))
+            p1 = T1.parent(node1)
+            if p1 is not None:
+                T1.add_edge(p1, replacement_leaf)
+            p2 = T2.parent(node2)
+            if p2 is not None:
+                T2.add_edge(p2, replacement_leaf)
+            delete_subtree(T1, node1)
+            delete_subtree(T2, node2)
+            subtree_replace_map[replacement_leaf] = covered_leaves
+
 
 if __name__ == '__main__':
     random.seed(42)
