@@ -3,9 +3,19 @@ import random
 import signal
 import sys
 
+class Node:
+    __slots__ = ('id', 'parent', 'children', 'attrs')
+
+    def __init__(self, node_id):
+        self.id = node_id
+        self.parent = None   # Node | None
+        self.children = []   # list[Node], max len 2
+        self.attrs = {}
+
+
 class _NodeView:
     def __init__(self, nodes):
-        self._nodes = nodes
+        self._nodes = nodes  # dict[int, Node]
 
     def __iter__(self):
         return iter(self._nodes)
@@ -14,52 +24,47 @@ class _NodeView:
         return n in self._nodes
 
     def __getitem__(self, n):
-        return self._nodes[n]
+        return self._nodes[n].attrs
+
 
 class RootedBinaryForest:
     def __init__(self):
-        # TODO: Change the following after full migration to this class
-        self._children = {}   # node -> list (len 0, 1, or 2)
-        self._parent = {}     # node -> parent node or None
-        self._node = {}       # node -> attribute dict
-        self.roots = set()    # nodes with no parent
+        self._nodes = {}   # int -> Node
+        self.roots = set() # set of node IDs with no parent
 
     def __contains__(self, n):
-        return n in self._node
+        return n in self._nodes
 
     def __iter__(self):
-        return iter(self._node)
+        return iter(self._nodes)
 
     def __len__(self):
-        return len(self._node)
+        return len(self._nodes)
 
     def __getitem__(self, n):
-        return self._children[n]
+        return [c.id for c in self._nodes[n].children]
 
     def add_node(self, n):
-        if n not in self._node:
-            self._children[n] = []
-            self._parent[n] = None
-            self._node[n] = {}
+        if n not in self._nodes:
+            self._nodes[n] = Node(n)
             self.roots.add(n)
 
     def remove_node(self, n):
-        p = self._parent[n]
-        if p is not None:
-            self._children[p].remove(n)
-        for c in self._children[n]:
-            self._parent[c] = None
-            self.roots.add(c)
+        node = self._nodes.pop(n)
+        if node.parent is not None:
+            node.parent.children.remove(node)
+        for c in node.children:
+            c.parent = None
+            self.roots.add(c.id)
         self.roots.discard(n)
-        del self._children[n]
-        del self._parent[n]
-        del self._node[n]
 
     def add_edge(self, u, v):
         self.add_node(u)
         self.add_node(v)
-        self._children[u].append(v)
-        self._parent[v] = u
+        u_node = self._nodes[u]
+        v_node = self._nodes[v]
+        u_node.children.append(v_node)
+        v_node.parent = u_node
         self.roots.discard(v)
 
     def add_edges_from(self, edges):
@@ -67,79 +72,98 @@ class RootedBinaryForest:
             self.add_edge(u, v)
 
     def remove_edge(self, u, v):
-        self._children[u].remove(v)
-        self._parent[v] = None
+        u_node = self._nodes[u]
+        v_node = self._nodes[v]
+        u_node.children.remove(v_node)
+        v_node.parent = None
         self.roots.add(v)
 
     def remove_edges_from(self, edges):
         for u, v in edges:
-            if u in self._children and v in self._children[u]:
-                self.remove_edge(u, v)
+            if u in self._nodes and v in self._nodes:
+                v_node = self._nodes[v]
+                if v_node.parent is self._nodes[u]:
+                    self.remove_edge(u, v)
 
     def successors(self, n):
-        return iter(self._children[n])
+        return (c.id for c in self._nodes[n].children)
 
     def predecessors(self, n):
-        p = self._parent[n]
+        p = self._nodes[n].parent
         if p is not None:
-            yield p
+            yield p.id
 
     def parent(self, n):
-        return self._parent[n]
+        p = self._nodes[n].parent
+        return p.id if p is not None else None
 
     def children(self, n):
-        return self._children[n]
+        return [c.id for c in self._nodes[n].children]
 
     def out_degree(self, n):
-        return len(self._children[n])
+        return len(self._nodes[n].children)
 
     def in_degree(self, n=None):
         if n is not None:
-            return 0 if self._parent[n] is None else 1
-        return ((v, 0 if p is None else 1) for v, p in self._parent.items())
+            return 0 if self._nodes[n].parent is None else 1
+        return ((n, 0 if node.parent is None else 1) for n, node in self._nodes.items())
 
     @property
     def nodes(self):
-        return _NodeView(self._node)
+        return _NodeView(self._nodes)
 
     def edges(self):
-        return ((u, v) for u, cs in self._children.items() for v in cs)
+        return ((u, c.id) for u, node in self._nodes.items() for c in node.children)
 
-    def relabel_node(self, old, new):
-        self._node[new] = self._node.pop(old)
-        self._children[new] = self._children.pop(old)
-        self._parent[new] = self._parent.pop(old)
-        if old in self.roots:
-            self.roots.discard(old)
-            self.roots.add(new)
-        p = self._parent[new]
-        if p is not None:
-            cs = self._children[p]
-            cs[cs.index(old)] = new
-        for c in self._children[new]:
-            self._parent[c] = new
+    def split_subtree(self, source):
+        source_node = self._nodes[source]
+        parent_node = source_node.parent
+        if parent_node is not None:
+            parent_node.children.remove(source_node)
+            source_node.parent = None
+        self.roots.discard(source)
+        new_forest = RootedBinaryForest()
+        stack = [source_node]
+        while stack:
+            node = stack.pop()
+            self._nodes.pop(node.id)
+            new_forest._nodes[node.id] = node
+            stack.extend(node.children)
+        new_forest.roots.add(source)
+        return new_forest, parent_node.id if parent_node is not None else None
     
-    def delete_subtree(self, source):
-        children = list(self.successors(source))
-        for v in children:
-            self.delete_subtree(v)
-        self.remove_node(source)
+    def add_subtree(self, subtree, parent=None):
+        self._nodes.update(subtree._nodes)
+        assert len(subtree.roots) == 1
+        root = next(iter(subtree.roots))
+        if parent is None:
+            self.roots.add(root)
+        else:
+            parent_node = self._nodes[parent]
+            parent_node.children.append(self._nodes[root])
+            self._nodes[root].parent = parent_node
 
     def copy(self):
         G = RootedBinaryForest()
-        G._node = {n: dict(attrs) for n, attrs in self._node.items()}
-        G._children = {n: list(cs) for n, cs in self._children.items()}
-        G._parent = dict(self._parent)
+        id_to_new = {}
+        for n, node in self._nodes.items():
+            new_node = Node(n)
+            new_node.attrs = dict(node.attrs)
+            G._nodes[n] = new_node
+            id_to_new[n] = new_node
+        for n, node in self._nodes.items():
+            new_node = id_to_new[n]
+            if node.parent is not None:
+                new_node.parent = id_to_new[node.parent.id]
+            new_node.children = [id_to_new[c.id] for c in node.children]
         G.roots = set(self.roots)
         return G
 
 
 def create_empty_copy(G):
     H = RootedBinaryForest()
-    for n in G._node:
-        H._children[n] = []
-        H._parent[n] = None
-        H._node[n] = {}
+    for n in G._nodes:
+        H._nodes[n] = Node(n)
         H.roots.add(n)
     return H
 
@@ -279,11 +303,42 @@ def find_root(graph, node):
         node = graph.parent(node)
     return node
 
+def subtree_reduce(T1, T2, leaves):
+    subtree_replace_map = {}
+    for node1, node2, covered_leaves in find_maximal_common_pendants(T1.copy(), T2.copy(), leaves):
+        replacement_leaf = next(iter(covered_leaves))
+        tree1, p1 = T1.split_subtree(node1)
+        tree2, p2 = T2.split_subtree(node2)
+        if p1 is not None:
+            T1.add_edge(p1, replacement_leaf)
+        else:
+            T1.add_node(replacement_leaf)
+        if p2 is not None:
+            T2.add_edge(p2, replacement_leaf)
+        else:
+            T2.add_node(replacement_leaf)
+        subtree_replace_map[replacement_leaf] = tree1
+    return T1, T2, subtree_replace_map
+
+def restore_subtree(graph, subtree_replace_map):
+    for leaf, tree in subtree_replace_map.items():
+        parent = graph.parent(leaf)
+        graph.remove_node(leaf)
+        graph.add_subtree(tree, parent=parent)
+    return graph
+
 class GraphSeeker:
     def __init__(self, T1: RootedBinaryForest, T2: RootedBinaryForest, leaves: frozenset[int]):
         self.T1 = T1
         self.T2 = T2
-        self.leaves = leaves
+        self.subtree_replace_map = {}
+        self.T1, self.T2, self.subtree_replace_map = subtree_reduce(T1, T2, leaves)
+        self.orig_leaves = frozenset(leaves)
+        to_remove = set()
+        for leaf, tree in self.subtree_replace_map.items():
+            to_remove.update(all_leaves_tree(tree, next(iter(tree.roots))))
+            to_remove.discard(leaf)
+        self.leaves = frozenset(leaves - to_remove)
         self.result = create_empty_copy(self.T1)
         self.best_cost = len(leaves)
         signal.signal(signal.SIGINT, self.exit)
@@ -349,12 +404,13 @@ class GraphSeeker:
     def prepare_solution(self, graph):
         visited = set()
         out_trees = []
-        for leaf in self.leaves:
+        graph = restore_subtree(graph, self.subtree_replace_map)
+        for leaf in self.orig_leaves:
             if leaf not in visited:
                 root = find_root(graph, leaf)
-                root = remove_contract_rooted(graph, self.leaves, root)
-                out_trees.append(tree_to_newick_print(graph, root=root))
+                root = remove_contract_rooted(graph, self.orig_leaves, root)
                 visited.update(all_leaves_tree(graph, root))
+                out_trees.append(tree_to_newick_print(graph, root=root))
         return "\n".join(out_trees)
 
     def exit(self, signum, frame):
@@ -394,14 +450,14 @@ def _tree_to_newick(g, root=None):
     if root is None:
         assert len(g.roots) == 1
         root = next(iter(g.roots))
-    if len(g[root]) == 0:
+    if g.out_degree(root) == 0:
         return (str(root), root)
-    subgs = sorted((_tree_to_newick(g, root=child) for child in g[root]), key=lambda x: x[1])
+    subgs = sorted((_tree_to_newick(g, root=child) for child in g.successors(root)), key=lambda x: x[1])
     return ("(" + ','.join(x[0] for x in subgs) + ")", subgs[0][1])
 
 
 def tree_to_newick_list(g, result, root):
-    if len(g[root]) == 0:
+    if g.out_degree(root) == 0:
         result.append(str(root))
         return
     result.append("(")
@@ -504,30 +560,6 @@ def find_maximal_common_pendants(T1, T2, leaves):
             visited.update(covered_leaves)
             if node1 not in leaves:
                 yield node1, node2, covered_leaves
-
-def delete_subtree(G, source):
-    children = list(G.successors(source))
-    for v in children:
-        delete_subtree(G, v)
-    G.remove_node(source)
-
-def reduce(T1, T2, leaves):
-    subtree_replace_map = {}
-    reduced = True
-    while reduced:
-        reduced = False
-        for node1, node2, covered_leaves in find_maximal_common_pendants(T1, T2, leaves):
-            reduced = True
-            replacement_leaf = next(iter(covered_leaves))
-            p1 = T1.parent(node1)
-            if p1 is not None:
-                T1.add_edge(p1, replacement_leaf)
-            p2 = T2.parent(node2)
-            if p2 is not None:
-                T2.add_edge(p2, replacement_leaf)
-            delete_subtree(T1, node1)
-            delete_subtree(T2, node2)
-            subtree_replace_map[replacement_leaf] = covered_leaves
 
 
 if __name__ == '__main__':
