@@ -322,14 +322,7 @@ def _find_chain_in_tree(T, start_leaf, leaves, visited=None):
         return None
     other = T._children[G1][0] if T._children[G1][1] == start_leaf else T._children[G1][1]
     if other not in leaves:
-        other_ch = T._children.get(other, [])
-        if len(other_ch) == 2:
-            has_leaf = any(c in leaves for c in other_ch)
-            has_int = any(c not in leaves for c in other_ch)
-            if has_leaf and has_int:
-                return None
-        else:
-            return None
+        return None
     chain = [start_leaf]
     node = G1
     while True:
@@ -426,6 +419,7 @@ def _truncate_chain(T, chain):
 
 def chain_reduce(T1, T2, leaves):
     chain_map = {}
+    return T1, T2, chain_map
     chains = list(find_common_chains(T1, T2, leaves))
     for chain in chains:
         _truncate_chain(T1, chain)
@@ -436,7 +430,7 @@ def chain_reduce(T1, T2, leaves):
 
 def restore_chain(graph, chain_map, min_id=0):
     next_id = [min((n for n in graph._node if n < 0), default=min_id) - 1]
-    if min_id < next_id[0]:
+    if min_id <= next_id[0]:
         next_id[0] = min_id - 1
 
     def fresh():
@@ -841,14 +835,85 @@ def find_maximal_common_pendants(T1, T2, leaves):
                 yield node1, node2, covered_leaves
 
 
+def find_maximal_common_pendants_multi(trees, leaves):
+    visited = set()
+    for T in trees:
+        get_min(T, leaves)
+
+    for leaf in leaves:
+        if leaf in visited:
+            continue
+        nodes = [leaf] * len(trees)
+
+        while all(T.parent(n) is not None for T, n in zip(trees, nodes)):
+            preds = [T.parent(n) for T, n in zip(trees, nodes)]
+            children_lists = [list(T.successors(p)) for T, p in zip(trees, preds)]
+
+            mismatch = not all(len(ch) == 2 for ch in children_lists)
+
+            if not mismatch:
+                siblings = []
+                for n, ch in zip(nodes, children_lists):
+                    a, b = ch
+                    siblings.append(b if a == n else a)
+                for i in range(1, len(trees)):
+                    if not compare_trees(siblings[0], trees[0], siblings[i], trees[i], leaves):
+                        mismatch = True
+                        break
+
+            if mismatch:
+                covered_leaves = frozenset(all_leaves_tree(trees[0], nodes[0]))
+                visited.update(covered_leaves)
+                if nodes[0] not in leaves:
+                    yield tuple(nodes), covered_leaves
+                break
+            else:
+                nodes = preds
+        else:
+            covered_leaves = frozenset(all_leaves_tree(trees[0], nodes[0]))
+            visited.update(covered_leaves)
+            if nodes[0] not in leaves:
+                yield tuple(nodes), covered_leaves
+
+
+def subtree_reduce_multi(trees, leaves):
+    subtree_replace_map = {}
+    copies = [T.copy() for T in trees]
+    for nodes, covered_leaves in find_maximal_common_pendants_multi(copies, leaves):
+        replacement_leaf = next(iter(covered_leaves))
+        parents = []
+        saved_subtree = None
+        for i, (T, node) in enumerate(zip(trees, nodes)):
+            subtree, parent = T.split_subtree(node)
+            parents.append(parent)
+            if i == 0:
+                saved_subtree = subtree
+        for T, parent in zip(trees, parents):
+            if parent is not None:
+                T.add_edge(parent, replacement_leaf)
+            else:
+                T.add_node(replacement_leaf)
+        subtree_replace_map[replacement_leaf] = saved_subtree
+    return trees, subtree_replace_map
+
+
 if __name__ == '__main__':
     random.seed(42)
     trees, n_leaves = read_input(sys.stdin)
-    if len(trees) > 2:
-        for leaf in range(1, n_leaves + 1):
-            print(str(leaf)+";")
-        sys.exit(0)
     leaves = frozenset(range(1, n_leaves + 1))
+    if len(trees) > 2:
+        _, srmap = subtree_reduce_multi(trees, leaves)
+        to_remove = set()
+        for leaf, tree in srmap.items():
+            to_remove.update(all_leaves_tree(tree, next(iter(tree.roots))))
+            to_remove.discard(leaf)
+        for leaf in range(1, n_leaves + 1):
+            if leaf not in to_remove:
+                if leaf not in srmap:
+                    print(str(leaf)+";")
+                else:
+                    print(tree_to_newick(srmap[leaf])+";")
+        sys.exit(0)
     T1, T2 = trees[0], trees[1]
     seeker = GraphSeeker(T1, T2, leaves)
     seeker.run()
