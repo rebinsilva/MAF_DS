@@ -268,6 +268,67 @@ static int remove_rooted_port(MutableTree& t, const std::vector<char>& keep_leaf
 }
 
 
+
+// Port of Python remove_contract_rooted(): recursively prunes rooted structure
+// and contracts degree-1 internal nodes.
+static int remove_contract_rooted_port(MutableTree& t, const std::vector<char>& keep_leaf, int node) {
+    if (node == NULL_NODE || !t.alive[node]) return NULL_NODE;
+
+    if (node >= 1 && node <= t.n_leaves && keep_leaf[node]) {
+        return node;
+    }
+
+    std::array<int,2> kids = t.ch[node];
+    for (int child : kids) {
+        if (child != NULL_NODE && t.alive[child]) {
+            remove_contract_rooted_port(t, keep_leaf, child);
+        }
+    }
+
+    int out_deg = 0;
+    int only_child = NULL_NODE;
+    for (int child : t.ch[node]) {
+        if (child != NULL_NODE && t.alive[child]) {
+            out_deg++;
+            only_child = child;
+        }
+    }
+
+    if (out_deg == 0) {
+        int pnode = t.par[node];
+
+        if (pnode != NULL_NODE) {
+            if (t.ch[pnode][0] == node) t.ch[pnode][0] = NULL_NODE;
+            if (t.ch[pnode][1] == node) t.ch[pnode][1] = NULL_NODE;
+        }
+
+        t.alive[node] = false;
+        t.par[node] = NULL_NODE;
+        t.ch[node] = {NULL_NODE, NULL_NODE};
+        return NULL_NODE;
+    }
+
+    if (out_deg == 1) {
+        int pnode = t.par[node];
+
+        if (pnode != NULL_NODE) {
+            if (t.ch[pnode][0] == node) t.ch[pnode][0] = only_child;
+            if (t.ch[pnode][1] == node) t.ch[pnode][1] = only_child;
+            t.par[only_child] = pnode;
+        } else {
+            t.par[only_child] = NULL_NODE;
+        }
+
+        t.alive[node] = false;
+        t.par[node] = NULL_NODE;
+        t.ch[node] = {NULL_NODE, NULL_NODE};
+        return only_child;
+    }
+
+    return node;
+}
+
+
 // Prune t to kept leaves. If contract=true, also suppresses degree-1 internals.
 // Returns new root; contract=false guarantees non-NULL (caller ensures >=1 kept leaf).
 static int prune_tree(MutableTree& t, const bool* keep, int root,
