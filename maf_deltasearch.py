@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import random
 import signal
 import sys
@@ -77,12 +78,7 @@ class RootedBinaryForest:
                 self.remove_edge(u, v)
 
     def successors(self, n):
-        return iter(self._children[n])
-
-    def predecessors(self, n):
-        p = self._parent[n]
-        if p is not None:
-            yield p
+        return self._children[n]
 
     def parent(self, n):
         return self._parent[n]
@@ -130,7 +126,9 @@ class RootedBinaryForest:
     def add_subtree(self, subtree, parent=None):
         assert len(subtree.roots) == 1
         root = next(iter(subtree.roots))
-        self._children.update(subtree._children)
+        # Copy children lists so graph mutations don't corrupt the saved subtree
+        for n, ch in subtree._children.items():
+            self._children[n] = list(ch)
         self._parent.update(subtree._parent)
         self._node.update(subtree._node)
         if parent is None:
@@ -213,19 +211,20 @@ def _get_min(graph, node, leaves):
     
     graph.nodes[node]["min"] = mini
     return mini
-    
-def find_contracted_root(graph, node, leaves):
-    found_leaves = 0
+
+def find_contracted_root(graph, node, leaves, n_leaves):
     if node in leaves:
-        found_leaves = 1
-        return found_leaves, node
+        return 1, node
+
+    found_leaves = 0
     for child in graph.successors(node):
-        child_leaves, child_root = find_contracted_root(graph, child, leaves)
-        if child_leaves == len(leaves):
+        child_leaves, child_root = find_contracted_root(graph, child, leaves, n_leaves)
+        if child_leaves == n_leaves:
             return child_leaves, child_root
 
         found_leaves += child_leaves
     return found_leaves, node
+    
 
 def get_min(graph, leaves):
     for root in graph.roots:
@@ -316,66 +315,61 @@ def restore_subtree(graph, subtree_replace_map):
     return graph
 
 
-def _find_chain_in_tree(T, start_leaf, leaves, visited=None):
-    G1 = T._parent[start_leaf]
-    if G1 is None or len(T._children[G1]) != 2:
-        return None
-    other = T._children[G1][0] if T._children[G1][1] == start_leaf else T._children[G1][1]
-    if other not in leaves:
-        return None
-    chain = [start_leaf]
-    node = G1
-    while True:
-        par = T._parent[node]
-        if par is None:
-            break
-        par_ch = T._children[par]
-        if len(par_ch) != 2:
-            break
-        sib = par_ch[0] if par_ch[1] == node else par_ch[1]
-        if sib not in leaves:
-            break
-        if visited is not None and sib in visited:
-            break
-        chain.append(sib)
-        node = par
-    return chain
-
-
-def _verify_chain_in_tree(T, chain):
-    c2 = chain[0]
-    G1 = T._parent[c2]
-    if G1 is None or len(T._children[G1]) != 2 or c2 not in T._children[G1]:
-        return False
-    node = G1
-    for ci in chain[1:]:
-        par = T._parent[node]
-        if par is None:
-            return False
-        par_ch = T._children[par]
-        if len(par_ch) != 2:
-            return False
-        other = par_ch[0] if par_ch[1] == node else par_ch[1]
-        if other != ci:
-            return False
-        node = par
-    return True
-
 
 def find_common_chains(T1, T2, leaves):
     visited = set()
     for leaf in leaves:
         if leaf in visited:
             continue
-        chain = _find_chain_in_tree(T1, leaf, leaves, visited)
-        if chain is None or len(chain) < 3:
+
+        G1_T1 = T1._parent.get(leaf)
+        if G1_T1 is None or len(T1._children.get(G1_T1, [])) != 2:
             visited.add(leaf)
             continue
-        if _verify_chain_in_tree(T2, chain):
-            visited.update(chain)
-            yield chain
-        else:
+        T1_ch = T1._children[G1_T1]
+        x2_T1 = T1_ch[0] if T1_ch[1] == leaf else T1_ch[1]
+        if x2_T1 not in leaves:
             visited.add(leaf)
+            continue
+
+        G1_T2 = T2._parent.get(leaf)
+        if G1_T2 is None or len(T2._children.get(G1_T2, [])) != 2:
+            visited.add(leaf)
+            continue
+        T2_ch = T2._children[G1_T2]
+        x2_T2 = T2_ch[0] if T2_ch[1] == leaf else T2_ch[1]
+        if x2_T2 != x2_T1:
+            visited.add(leaf)
+            continue
+
+        chain = [leaf]
+        node_T1, node_T2 = G1_T1, G1_T2
+
+        while True:
+            par_T1 = T1._parent.get(node_T1)
+            par_T2 = T2._parent.get(node_T2)
+            if par_T1 is None or par_T2 is None:
+                break
+            T1_par_ch = T1._children.get(par_T1, [])
+            T2_par_ch = T2._children.get(par_T2, [])
+            if len(T1_par_ch) != 2 or len(T2_par_ch) != 2:
+                break
+            sib_T1 = T1_par_ch[0] if T1_par_ch[1] == node_T1 else T1_par_ch[1]
+            sib_T2 = T2_par_ch[0] if T2_par_ch[1] == node_T2 else T2_par_ch[1]
+            if sib_T1 != sib_T2:
+                break
+            sib = sib_T1
+            if sib not in leaves or sib in visited:
+                break
+            chain.append(sib)
+            node_T1, node_T2 = par_T1, par_T2
+
+        if len(chain) < 3:
+            visited.add(leaf)
+            continue
+
+        visited.update(chain)
+        yield chain
 
 
 def _truncate_chain(T, chain):
@@ -419,7 +413,6 @@ def _truncate_chain(T, chain):
 
 def chain_reduce(T1, T2, leaves):
     chain_map = {}
-    return T1, T2, chain_map
     chains = list(find_common_chains(T1, T2, leaves))
     for chain in chains:
         _truncate_chain(T1, chain)
@@ -474,7 +467,6 @@ def restore_chain(graph, chain_map, min_id=0):
 
 
 def _find_pendant_3_chain_for_x3(T, x3, leaves):
-    """If x3 is the top leaf of a pendant 3-chain in T, return (x1, x2) cherry pair, else None."""
     G2 = T._parent.get(x3)
     if G2 is None or len(T._children.get(G2, [])) != 2:
         return None
@@ -546,7 +538,6 @@ def _remove_leaf_and_suppress(T, leaf):
 
 def chain_32_reduce(T1, T2, leaves):
     chain_32_map = {}
-    return T1, T2, chain_32_map
     chains = list(find_32_chains(T1, T2, leaves))
     for x1, x2, _, xi in chains:
         xj = x2 if xi == x1 else x1
@@ -577,30 +568,35 @@ class GraphSeeker:
         self.T1 = T1
         self.T2 = T2
         self.orig_leaves = frozenset(leaves)
-        self.reduction_stack = []  # list of (subtree_replace_map, chain_replace_map, chain_32_map)
+        self.reduction_stack = []
         self.leaves = frozenset(leaves)
         while True:
-            T1_new, T2_new, srmap = subtree_reduce(self.T1, self.T2, self.leaves)
-            to_remove = set()
-            for leaf, tree in srmap.items():
-                to_remove.update(all_leaves_tree(tree, next(iter(tree.roots))))
-                to_remove.discard(leaf)
-            leaves_after_sub = frozenset(self.leaves - to_remove)
-            T1_new, T2_new, crmap = chain_reduce(T1_new, T2_new, leaves_after_sub)
-            chain_removed = set()
-            for removed in crmap.values():
-                chain_removed.update(removed)
-            leaves_after_chain = frozenset(leaves_after_sub - chain_removed)
-            T1_new, T2_new, c32map = chain_32_reduce(T1_new, T2_new, leaves_after_chain)
-            leaves_after_32 = frozenset(leaves_after_chain - c32map.keys())
-            if not srmap and not crmap and not c32map:
+            while True:
+                T1_new, T2_new, srmap = subtree_reduce(self.T1, self.T2, self.leaves)
+                to_remove = set()
+                for leaf, tree in srmap.items():
+                    to_remove.update(all_leaves_tree(tree, next(iter(tree.roots))))
+                    to_remove.discard(leaf)
+                leaves_after_sub = frozenset(self.leaves - to_remove)
+                T1_new, T2_new, crmap = chain_reduce(T1_new, T2_new, leaves_after_sub)
+                chain_removed = set()
+                for removed in crmap.values():
+                    chain_removed.update(removed)
+                leaves_after_chain = frozenset(leaves_after_sub - chain_removed)
+                if not srmap and not crmap:
+                    break
+                self.T1, self.T2 = T1_new, T2_new
+                self.leaves = leaves_after_chain
+                self.reduction_stack.append((srmap, crmap, {}))
+            T1_new, T2_new, c32map = chain_32_reduce(self.T1, self.T2, self.leaves)
+            if not c32map:
                 break
             self.T1, self.T2 = T1_new, T2_new
-            self.leaves = leaves_after_32
-            self.reduction_stack.append((srmap, crmap, c32map))
+            self.leaves = frozenset(self.leaves - c32map.keys())
+            self.reduction_stack.append(({}, {}, c32map))
+
         self.result = create_empty_copy(self.T1)
-        self.result_string = self.prepare_solution(self.result)
-        self.best_cost = len(leaves)
+        self.best_cost = len(self.leaves)
         signal.signal(signal.SIGINT, self.exit)
         signal.signal(signal.SIGTERM, self.exit)
 
@@ -622,7 +618,6 @@ class GraphSeeker:
                     tst_subset = c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
                     cur_graph.add_edges_from(tst_subset)
 
-                    # tst_roots = {find_root(cur_graph, root) for root in cur_roots}
                     changed_roots = set()
                     tst_roots = set()
                     for root in cur_roots:
@@ -639,13 +634,14 @@ class GraphSeeker:
                         for T1_root in tst_roots - changed_roots:
                             T1_leaves = set(all_leaves_tree(cur_graph, T1_root))
                             T2_root = find_root(T2, next(iter(T1_leaves)))
-                            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves)
+                            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves, len(T1_leaves))
                             delete_subtree_leaves(T2, T1_leaves, T2_root)
                         for T1_root in changed_roots:
                             T1_leaves = set(all_leaves_tree(cur_graph, T1_root))
+                            n_T1_leaves = len(T1_leaves)
                             T2_root = find_root(T2, next(iter(T1_leaves)))
-                            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves)
-                            if not (n_leaves == len(T1_leaves)):
+                            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves, n_T1_leaves)
+                            if n_leaves != n_T1_leaves:
                                 agreement = False
                                 break
                             _get_min(T2, T2_root, T1_leaves)
@@ -659,7 +655,6 @@ class GraphSeeker:
                             del c[i*k+min(i, m): (i+1)*k+min(i+1,m)]
                             if cur_cost < self.best_cost:
                                 self.result = cur_graph.copy()
-                                self.result_string = self.prepare_solution(self.result)
                                 self.best_cost = cur_cost
                             continue
                     cur_graph.remove_edges_from(tst_subset)
@@ -687,9 +682,10 @@ class GraphSeeker:
 
     def exit(self, signum, frame):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        # print(self.prepare_solution(self.result))
-        print(self.result_string)
-        sys.exit(0)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        self.result_string = self.prepare_solution(self.result)
+        print(self.result_string, flush=True)
+        os._exit(0)
 
 
 def read_input(f):
