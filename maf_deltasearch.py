@@ -4,26 +4,14 @@ import random
 import signal
 import sys
 
-class _NodeView:
-    def __init__(self, nodes):
-        self._nodes = nodes
-
-    def __iter__(self):
-        return iter(self._nodes)
-
-    def __contains__(self, n):
-        return n in self._nodes
-
-    def __getitem__(self, n):
-        return self._nodes[n]
-
+PRINT_STATS = True
 
 class RootedBinaryForest:
     def __init__(self):
-        self._children = {}   
-        self._parent = {}     
-        self._node = {}
-        self.roots = set()    
+        self._children = {}
+        self._parent = {}
+        self._node = set()
+        self.roots = set()
 
     def __contains__(self, n):
         return n in self._node
@@ -41,7 +29,7 @@ class RootedBinaryForest:
         if n not in self._node:
             self._children[n] = []
             self._parent[n] = None
-            self._node[n] = {}
+            self._node.add(n)
             self.roots.add(n)
 
     def remove_node(self, n):
@@ -54,7 +42,7 @@ class RootedBinaryForest:
         self.roots.discard(n)
         del self._children[n]
         del self._parent[n]
-        del self._node[n]
+        self._node.discard(n)
 
     def add_edge(self, u, v):
         self.add_node(u)
@@ -94,10 +82,6 @@ class RootedBinaryForest:
             return 0 if self._parent[n] is None else 1
         return ((v, 0 if p is None else 1) for v, p in self._parent.items())
 
-    @property
-    def nodes(self):
-        return _NodeView(self._node)
-
     def edges(self):
         return ((u, v) for u, cs in self._children.items() for v in cs)
 
@@ -118,7 +102,8 @@ class RootedBinaryForest:
             n = stack.pop()
             new_forest._children[n] = self._children.pop(n)
             new_forest._parent[n] = self._parent.pop(n)
-            new_forest._node[n] = self._node.pop(n)
+            self._node.discard(n)
+            new_forest._node.add(n)
             stack.extend(new_forest._children[n])
         new_forest.roots.add(source)
         return new_forest, parent
@@ -139,11 +124,12 @@ class RootedBinaryForest:
 
     def copy(self):
         G = RootedBinaryForest()
-        G._node = {n: dict(attrs) for n, attrs in self._node.items()}
+        G._node = set(self._node)
         G._children = {n: list(cs) for n, cs in self._children.items()}
         G._parent = dict(self._parent)
         G.roots = set(self.roots)
         return G
+
 
 
 def create_empty_copy(G):
@@ -151,7 +137,7 @@ def create_empty_copy(G):
     for n in G._node:
         H._children[n] = []
         H._parent[n] = None
-        H._node[n] = {}
+        H._node.add(n)
         H.roots.add(n)
     return H
 
@@ -196,21 +182,48 @@ def remove_contract_rooted(T, leaves: frozenset, node):
         return child
     return node
 
-def _get_min(graph, node, leaves):
+def _get_min(graph, node, leaves, min_dict):
     if node in leaves:
-        graph.nodes[node]["min"] = node
+        min_dict[node] = node
         return node
-    
+
     if graph.out_degree(node) == 0:
-        graph.nodes[node]["min"] = float('inf')
+        min_dict[node] = float('inf')
         return float('inf')
-    
+
     mini = float('inf')
     for child in graph.successors(node):
-        mini = min(mini, _get_min(graph, child, leaves))
-    
-    graph.nodes[node]["min"] = mini
+        mini = min(mini, _get_min(graph, child, leaves, min_dict))
+
+    min_dict[node] = mini
     return mini
+
+
+def find_contracted_root2(graph, root, leaves, n_leaves):
+    stack = [root]
+    found_leaves = dict()
+
+    while stack:
+        node = stack[-1]
+
+        if node in leaves:
+            found_leaves[node] = 1
+        else:
+            children = graph.successors(node)
+            if len(children) == 0:
+                found_leaves[node] = 0
+            elif children[0] not in found_leaves:
+                stack.extend(children)
+                continue
+            else:
+                found_leaves[node] = 0
+                for child in children:
+                    found_leaves[node] += found_leaves[child]
+        stack.pop()
+        if found_leaves[node] == n_leaves:
+            return n_leaves, node
+
+    return found_leaves[root], root
 
 def find_contracted_root(graph, node, leaves, n_leaves):
     if node in leaves:
@@ -226,12 +239,12 @@ def find_contracted_root(graph, node, leaves, n_leaves):
     return found_leaves, node
     
 
-def get_min(graph, leaves):
+def get_min(graph, leaves, min_dict):
     for root in graph.roots:
-        _get_min(graph, root, leaves)
+        _get_min(graph, root, leaves, min_dict)
 
-def compare_trees(node1, T1, node2, T2, leaves):
-    if T1.nodes[node1]["min"] != T2.nodes[node2]["min"]:
+def compare_trees(node1, T1, T1_min, node2, T2, T2_min, leaves):
+    if T1_min[node1] != T2_min[node2]:
         return False
 
     while True:
@@ -242,12 +255,12 @@ def compare_trees(node1, T1, node2, T2, leaves):
             node1 = next(iter(T1.successors(node1)))
         if T1_out_deg == 2:
             node11, node12 = T1.successors(node1)
-            if T1.nodes[node11]["min"] != float('inf') and T1.nodes[node12]["min"] != float('inf'):
+            if T1_min[node11] != float('inf') and T1_min[node12] != float('inf'):
                 break
-            if T1.nodes[node11]["min"] != float('inf'):
+            if T1_min[node11] != float('inf'):
                 node1 = node11
                 continue
-            if T1.nodes[node12]["min"] != float('inf'):
+            if T1_min[node12] != float('inf'):
                 node1 = node12
                 continue
             T1_out_deg = 0
@@ -260,30 +273,30 @@ def compare_trees(node1, T1, node2, T2, leaves):
             node2 = next(iter(T2.successors(node2)))
         if T2_out_deg == 2:
             node21, node22 = T2.successors(node2)
-            if T2.nodes[node21]["min"] != float('inf') and T2.nodes[node22]["min"] != float('inf'):
+            if T2_min[node21] != float('inf') and T2_min[node22] != float('inf'):
                 break
-            if T2.nodes[node21]["min"] != float('inf'):
+            if T2_min[node21] != float('inf'):
                 node2 = node21
                 continue
-            if T2.nodes[node22]["min"] != float('inf'):
+            if T2_min[node22] != float('inf'):
                 node2 = node22
                 continue
             T2_out_deg = 0
             break
-            
 
     if T1_out_deg == 0 and T2_out_deg == 0:
         return True
-    
+
     if T1_out_deg == 0 or T2_out_deg == 0:
         return False
-    
-    if T1.nodes[node11]["min"] > T1.nodes[node12]["min"]:
+
+    if T1_min[node11] > T1_min[node12]:
         node11, node12 = node12, node11
-    if T2.nodes[node21]["min"] > T2.nodes[node22]["min"]:
+    if T2_min[node21] > T2_min[node22]:
         node21, node22 = node22, node21
-    
-    return compare_trees(node11, T1, node21, T2, leaves) and compare_trees(node12, T1, node22, T2, leaves)
+
+    return (compare_trees(node11, T1, T1_min, node21, T2, T2_min, leaves) and
+            compare_trees(node12, T1, T1_min, node22, T2, T2_min, leaves))
 
 def find_root(graph, node):
     while graph.parent(node) is not None:
@@ -397,11 +410,11 @@ def _truncate_chain(T, chain):
         T.roots.discard(ci)
         del T._children[ci]
         del T._parent[ci]
-        del T._node[ci]
+        T._node.discard(ci)
         T.roots.discard(node)
         del T._children[node]
         del T._parent[node]
-        del T._node[node]
+        T._node.discard(node)
         node = next_node
 
     if above is not None:
@@ -440,10 +453,10 @@ def restore_chain(graph, chain_map, min_id=0):
             new_node = fresh()
             graph._children[new_node] = []
             graph._parent[new_node] = None
-            graph._node[new_node] = {}
+            graph._node.add(new_node)
             graph._children[ci] = []
             graph._parent[ci] = None
-            graph._node[ci] = {}
+            graph._node.add(ci)
 
             if top_parent is not None:
                 graph._children[top_parent].remove(top)
@@ -515,7 +528,7 @@ def _remove_leaf_and_suppress(T, leaf):
     T.roots.discard(leaf)
     del T._children[leaf]
     del T._parent[leaf]
-    del T._node[leaf]
+    T._node.discard(leaf)
     if p is None:
         return
     T._children[p].remove(leaf)
@@ -532,7 +545,7 @@ def _remove_leaf_and_suppress(T, leaf):
             T._parent[child] = None
         del T._children[p]
         del T._parent[p]
-        del T._node[p]
+        T._node.discard(p)
         T.roots.discard(p)
 
 
@@ -558,7 +571,7 @@ def restore_32chain(graph, chain_32_map):
                 graph.roots.discard(xj)
         graph._children[xj] = []
         graph._parent[xj] = None
-        graph._node[xj] = {}
+        graph._node.add(xj)
         graph.roots.add(xj)
     return graph
 
@@ -570,6 +583,14 @@ class GraphSeeker:
         self.orig_leaves = frozenset(leaves)
         self.reduction_stack = []
         self.leaves = frozenset(leaves)
+        _initial_leaves = len(leaves)
+        _subtrees_reduced = 0
+        _subtree_calls = 0
+        _chains_reduced = 0
+        _chain_calls = 0
+        _cherries_reduced = 0
+        _cherry_calls = 0
+        _inner_iters = 0
         while True:
             while True:
                 T1_new, T2_new, srmap = subtree_reduce(self.T1, self.T2, self.leaves)
@@ -585,16 +606,37 @@ class GraphSeeker:
                 leaves_after_chain = frozenset(leaves_after_sub - chain_removed)
                 if not srmap and not crmap:
                     break
+                _inner_iters += 1
+                if srmap:
+                    _subtrees_reduced += len(srmap)
+                    _subtree_calls += 1
+                if crmap:
+                    _chains_reduced += len(crmap)
+                    _chain_calls += 1
                 self.T1, self.T2 = T1_new, T2_new
                 self.leaves = leaves_after_chain
                 self.reduction_stack.append((srmap, crmap, {}))
             T1_new, T2_new, c32map = chain_32_reduce(self.T1, self.T2, self.leaves)
             if not c32map:
                 break
+            _cherries_reduced += len(c32map)
+            _cherry_calls += 1
             self.T1, self.T2 = T1_new, T2_new
             self.leaves = frozenset(self.leaves - c32map.keys())
             self.reduction_stack.append(({}, {}, c32map))
 
+        self.stats = {
+            'initial_leaves': _initial_leaves,
+            'leaves_after_reduction': len(self.leaves),
+            'subtrees_reduced': _subtrees_reduced,
+            'subtree_calls': _subtree_calls,
+            'chains_reduced': _chains_reduced,
+            'chain_calls': _chain_calls,
+            'cherries_reduced': _cherries_reduced,
+            'cherry_calls': _cherry_calls,
+            'inner_iters': _inner_iters,
+            'run_loop_count': 0,
+        }
         self.result = create_empty_copy(self.T1)
         self.best_cost = len(self.leaves)
         signal.signal(signal.SIGINT, self.exit)
@@ -628,7 +670,8 @@ class GraphSeeker:
                     tst_cost = len(tst_roots)
 
                     if tst_cost < cur_cost:
-                        get_min(cur_graph, self.leaves)
+                        cur_min = {}
+                        get_min(cur_graph, self.leaves, cur_min)
                         T2 = self.T2.copy()
                         agreement = True
                         for T1_root in tst_roots - changed_roots:
@@ -644,8 +687,9 @@ class GraphSeeker:
                             if n_leaves != n_T1_leaves:
                                 agreement = False
                                 break
-                            _get_min(T2, T2_root, T1_leaves)
-                            if not compare_trees(T1_root, cur_graph, T2_root, T2, T1_leaves):
+                            T2_min = {}
+                            _get_min(T2, T2_root, T1_leaves, T2_min)
+                            if not compare_trees(T1_root, cur_graph, cur_min, T2_root, T2, T2_min, T1_leaves):
                                 agreement = False
                                 break
                             delete_subtree_leaves(T2, T1_leaves, T2_root)
@@ -658,6 +702,7 @@ class GraphSeeker:
                                 self.best_cost = cur_cost
                             continue
                     cur_graph.remove_edges_from(tst_subset)
+            self.stats['run_loop_count'] += 1
             c = list(self.T1.edges())
             random.shuffle(c)
 
@@ -684,6 +729,21 @@ class GraphSeeker:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         self.result_string = self.prepare_solution(self.result)
+        if PRINT_STATS:
+            s = self.stats
+            for key, val in [
+                ('initial_leaves',        s['initial_leaves']),
+                ('leaves_after_reduction',s['leaves_after_reduction']),
+                ('subtrees_reduced',      s['subtrees_reduced']),
+                ('subtree_calls',         s['subtree_calls']),
+                ('chains_reduced',        s['chains_reduced']),
+                ('chain_calls',           s['chain_calls']),
+                ('cherries_reduced',      s['cherries_reduced']),
+                ('cherry_calls',          s['cherry_calls']),
+                ('inner_iters',           s['inner_iters']),
+                ('run_loop_completions',  s['run_loop_count']),
+            ]:
+                print(f"#s {key} {val}", flush=True)
         print(self.result_string, flush=True)
         os._exit(0)
 
@@ -788,8 +848,10 @@ def parse_newick_to_digraph(newick_str: str) -> RootedBinaryForest:
 
 def find_maximal_common_pendants(T1, T2, leaves):
     visited = set()
-    get_min(T1, leaves)
-    get_min(T2, leaves)
+    T1_min = {}
+    T2_min = {}
+    get_min(T1, leaves, T1_min)
+    get_min(T2, leaves, T2_min)
     for leaf in leaves:
         if leaf in visited:
             continue
@@ -810,7 +872,7 @@ def find_maximal_common_pendants(T1, T2, leaves):
                     node11, node12 = node12, node11
                 if node21 != node2:
                     node21, node22 = node22, node21
-                if not compare_trees(node12, T1, node22, T2, leaves):
+                if not compare_trees(node12, T1, T1_min, node22, T2, T2_min, leaves):
                     mismatch = True
             else:
                 mismatch = True
@@ -833,8 +895,11 @@ def find_maximal_common_pendants(T1, T2, leaves):
 
 def find_maximal_common_pendants_multi(trees, leaves):
     visited = set()
+    mins = []
     for T in trees:
-        get_min(T, leaves)
+        m = {}
+        get_min(T, leaves, m)
+        mins.append(m)
 
     for leaf in leaves:
         if leaf in visited:
@@ -853,7 +918,7 @@ def find_maximal_common_pendants_multi(trees, leaves):
                     a, b = ch
                     siblings.append(b if a == n else a)
                 for i in range(1, len(trees)):
-                    if not compare_trees(siblings[0], trees[0], siblings[i], trees[i], leaves):
+                    if not compare_trees(siblings[0], trees[0], mins[0], siblings[i], trees[i], mins[i], leaves):
                         mismatch = True
                         break
 
