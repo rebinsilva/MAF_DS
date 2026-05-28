@@ -742,6 +742,7 @@ class GraphSeeker:
                 ('cherry_calls',          s['cherry_calls']),
                 ('inner_iters',           s['inner_iters']),
                 ('run_loop_completions',  s['run_loop_count']),
+                ('n_components',          self.best_cost),
             ]:
                 print(f"#s {key} {val}", flush=True)
         print(self.result_string, flush=True)
