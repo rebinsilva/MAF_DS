@@ -209,6 +209,65 @@ private:
 };
 
 
+
+// Port of Python remove_rooted(): recursively removes/prunes rooted structure.
+// This helper works on MutableTree snapshots and is currently meant as a C++ porting
+// step, not yet wired into the delta-search pipeline.
+static int remove_rooted_port(MutableTree& t, const std::vector<char>& keep_leaf, int node) {
+    if (node == NULL_NODE || !t.alive[node]) return NULL_NODE;
+
+    if (node >= 1 && node <= t.n_leaves && keep_leaf[node]) {
+        return node;
+    }
+
+    std::array<int,2> kids = t.ch[node];
+    for (int child : kids) {
+        if (child != NULL_NODE && t.alive[child]) {
+            remove_rooted_port(t, keep_leaf, child);
+        }
+    }
+
+    int out_deg = 0;
+    int only_child = NULL_NODE;
+    for (int child : t.ch[node]) {
+        if (child != NULL_NODE && t.alive[child]) {
+            out_deg++;
+            only_child = child;
+        }
+    }
+
+    if (out_deg == 0) {
+        t.alive[node] = false;
+        int pnode = t.par[node];
+        if (pnode != NULL_NODE) {
+            if (t.ch[pnode][0] == node) t.ch[pnode][0] = NULL_NODE;
+            if (t.ch[pnode][1] == node) t.ch[pnode][1] = NULL_NODE;
+        }
+        t.par[node] = NULL_NODE;
+        return NULL_NODE;
+    }
+
+    if (out_deg == 1) {
+        int pnode = t.par[node];
+
+        if (pnode != NULL_NODE) {
+            if (t.ch[pnode][0] == node) t.ch[pnode][0] = only_child;
+            if (t.ch[pnode][1] == node) t.ch[pnode][1] = only_child;
+            t.par[only_child] = pnode;
+        } else {
+            t.par[only_child] = NULL_NODE;
+        }
+
+        t.alive[node] = false;
+        t.ch[node] = {NULL_NODE, NULL_NODE};
+        t.par[node] = NULL_NODE;
+        return only_child;
+    }
+
+    return node;
+}
+
+
 // Prune t to kept leaves. If contract=true, also suppresses degree-1 internals.
 // Returns new root; contract=false guarantees non-NULL (caller ensures >=1 kept leaf).
 static int prune_tree(MutableTree& t, const bool* keep, int root,
@@ -516,7 +575,7 @@ struct GraphSeeker {
 
     GraphSeeker(const PhyloTree& t1, const PhyloTree& t2, int nl)
         : T1(t1), T2(t2), n_leaves(nl), forest(t1),
-          best_score(forest.score()), rng(RAND)
+          best_score(forest.score()), rng(1)
     { scratch.init(t1.n_nodes, t1.n_leaves); }
 
     void run() {
