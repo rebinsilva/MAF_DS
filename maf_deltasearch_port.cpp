@@ -534,6 +534,54 @@ static bool trees_equal(const MutableTree& t1, int r1,
 }
 
 
+
+
+// Collect all leaf IDs under a rooted subtree.
+static void collect_subtree_leaves(const MutableTree& t, int root, std::vector<int>& leaves) {
+    if (root == NULL_NODE || !t.alive[root]) return;
+
+    std::vector<int> stk;
+    stk.push_back(root);
+
+    while (!stk.empty()) {
+        int v = stk.back();
+        stk.pop_back();
+
+        if (!t.alive[v]) continue;
+
+        if (t.is_leaf(v)) {
+            leaves.push_back(v);
+            continue;
+        }
+
+        if (t.ch[v][0] != NULL_NODE) stk.push_back(t.ch[v][0]);
+        if (t.ch[v][1] != NULL_NODE) stk.push_back(t.ch[v][1]);
+    }
+
+    std::sort(leaves.begin(), leaves.end());
+}
+
+// First reduction rule: subtree reduction.
+// Detects shared rooted subtrees between T1 and T2 so they can be reduced/contracted
+// before the main delta-search explores edge deletions.
+//
+// Current status: helper scaffold for the subtree-reduction port. The existing
+// agreement/pruning code below already contains the subtree comparison machinery;
+// this function is the integration point for applying that rule as a preprocessing step.
+static bool apply_subtree_reduction(MutableTree& t1, MutableTree& t2) {
+    bool changed = false;
+
+    // TODO: Traverse rooted subtrees in t1 and t2.
+    // TODO: Identify matching leaf sets/topology using the existing min-leaf ordering helpers.
+    // TODO: Contract each common rooted subtree into a reduced representative.
+    // TODO: Repeat until no more common subtrees can be reduced.
+
+    (void)t1;
+    (void)t2;
+    return changed;
+}
+
+
 // Returns true iff every contracted T1 component matches the corresponding T2 subtree.
 static bool agreement_check(const MutableForest& forest, const PhyloTree& T2,
                              AgreementScratch& sc) {
