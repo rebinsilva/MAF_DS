@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
+import json
 import os
 import random
 import signal
 import sys
 
-PRINT_STATS = True
+PRINT_STATS = False
 
 class RootedBinaryForest:
     def __init__(self):
@@ -481,7 +482,7 @@ def restore_chain(graph, chain_map, min_id=0):
 
 def _find_pendant_3_chain_for_x3(T, x3, leaves):
     G2 = T._parent.get(x3)
-    if G2 is None or len(T._children.get(G2, [])) != 2:
+    if G2 is None or len(T._children[G2]) != 2:
         return None
     ch = T._children[G2]
     G1 = ch[0] if ch[1] == x3 else ch[1]
@@ -576,14 +577,81 @@ def restore_32chain(graph, chain_32_map):
     return graph
 
 
+def _apply_reductions(T1, T2, leaves):
+    while True:
+        while True:
+            T1, T2, srmap = subtree_reduce(T1, T2, leaves)
+            to_remove = set()
+            for leaf, tree in srmap.items():
+                to_remove.update(all_leaves_tree(tree, next(iter(tree.roots))))
+                to_remove.discard(leaf)
+            leaves_after_sub = frozenset(leaves - to_remove)
+            T1, T2, crmap = chain_reduce(T1, T2, leaves_after_sub)
+            chain_removed = set()
+            for removed in crmap.values():
+                chain_removed.update(removed)
+            leaves = frozenset(leaves_after_sub - chain_removed)
+            if not srmap and not crmap:
+                break
+        break
+        T1, T2, c32map = chain_32_reduce(T1, T2, leaves)
+        if not c32map:
+            break
+        leaves = frozenset(leaves - c32map.keys())
+    return T1, T2, leaves
+
+
 class GraphSeeker:
-    def __init__(self, T1: RootedBinaryForest, T2: RootedBinaryForest, leaves: frozenset[int]):
+    def __init__(self, T1: RootedBinaryForest, T2: RootedBinaryForest, leaves: frozenset[int], treedecomp=None):
         self.T1 = T1
         self.T2 = T2
         self.orig_leaves = frozenset(leaves)
         self.reduction_stack = []
         self.leaves = frozenset(leaves)
-        _initial_leaves = len(leaves)
+        self.treedecomp = treedecomp
+        self._reduce()
+        self.result = create_empty_copy(self.T1)
+        self.best_cost = len(self.leaves)
+        signal.signal(signal.SIGINT, self.exit)
+        signal.signal(signal.SIGTERM, self.exit)
+
+    def _order_edges_by_treedecomp(self, edges):
+        tw, bags, adj = self.treedecomp
+        n = len(self.orig_leaves)
+
+        def t1_to_display(node):
+            return node if node > 0 else n - node
+
+        degrees = [len(a) for a in adj]
+        start = next(i for i, d in enumerate(degrees) if d <= 1)
+        visited = [False] * len(bags)
+        queue = [start]
+        visited[start] = True
+        bag_order = []
+        while queue:
+            bi = queue.pop(0)
+            bag_order.append(bi)
+            for nb in adj[bi]:
+                if not visited[nb]:
+                    visited[nb] = True
+                    queue.append(nb)
+        bag_pos = {bi: pos for pos, bi in enumerate(bag_order)}
+
+        node_bags = {}
+        for bi in bag_order:
+            for d in bags[bi]:
+                node_bags.setdefault(d, []).append(bi)
+
+        def edge_priority(edge):
+            du = t1_to_display(edge[0])
+            dv = t1_to_display(edge[1])
+            common = set(node_bags.get(du, [])) & set(node_bags.get(dv, []))
+            return min((bag_pos[bi] for bi in common), default=len(bags))
+
+        return sorted(edges, key=edge_priority)
+
+    def _reduce(self):
+        _initial_leaves = len(self.leaves)
         _subtrees_reduced = 0
         _subtree_calls = 0
         _chains_reduced = 0
@@ -593,37 +661,38 @@ class GraphSeeker:
         _inner_iters = 0
         while True:
             while True:
-                T1_new, T2_new, srmap = subtree_reduce(self.T1, self.T2, self.leaves)
-                to_remove = set()
-                for leaf, tree in srmap.items():
-                    to_remove.update(all_leaves_tree(tree, next(iter(tree.roots))))
-                    to_remove.discard(leaf)
-                leaves_after_sub = frozenset(self.leaves - to_remove)
-                T1_new, T2_new, crmap = chain_reduce(T1_new, T2_new, leaves_after_sub)
+                T1_new, T2_new, c32map = chain_32_reduce(self.T1, self.T2, self.leaves)
+                if c32map:
+                    _cherries_reduced += len(c32map)
+                    _cherry_calls += 1
+                    self.T1, self.T2 = T1_new, T2_new
+                    self.leaves = frozenset(self.leaves - c32map.keys())
+                    self.reduction_stack.append(({}, {}, c32map))
+                T1_new, T2_new, crmap = chain_reduce(self.T1, self.T2, self.leaves)
                 chain_removed = set()
                 for removed in crmap.values():
                     chain_removed.update(removed)
-                leaves_after_chain = frozenset(leaves_after_sub - chain_removed)
-                if not srmap and not crmap:
-                    break
-                _inner_iters += 1
-                if srmap:
-                    _subtrees_reduced += len(srmap)
-                    _subtree_calls += 1
                 if crmap:
                     _chains_reduced += len(crmap)
                     _chain_calls += 1
-                self.T1, self.T2 = T1_new, T2_new
-                self.leaves = leaves_after_chain
-                self.reduction_stack.append((srmap, crmap, {}))
-            T1_new, T2_new, c32map = chain_32_reduce(self.T1, self.T2, self.leaves)
-            if not c32map:
+                    self.T1, self.T2 = T1_new, T2_new
+                    self.leaves = frozenset(self.leaves - chain_removed)
+                    self.reduction_stack.append(({}, crmap, {}))
+                if not c32map and not crmap:
+                    break
+                _inner_iters += 1
+            T1_new, T2_new, srmap = subtree_reduce(self.T1, self.T2, self.leaves)
+            to_remove = set()
+            for leaf, tree in srmap.items():
+                to_remove.update(all_leaves_tree(tree, next(iter(tree.roots))))
+                to_remove.discard(leaf)
+            if not srmap:
                 break
-            _cherries_reduced += len(c32map)
-            _cherry_calls += 1
+            _subtrees_reduced += len(srmap)
+            _subtree_calls += 1
             self.T1, self.T2 = T1_new, T2_new
-            self.leaves = frozenset(self.leaves - c32map.keys())
-            self.reduction_stack.append(({}, {}, c32map))
+            self.leaves = frozenset(self.leaves - to_remove)
+            self.reduction_stack.append((srmap, {}, {}))
 
         self.stats = {
             'initial_leaves': _initial_leaves,
@@ -637,10 +706,6 @@ class GraphSeeker:
             'inner_iters': _inner_iters,
             'run_loop_count': 0,
         }
-        self.result = create_empty_copy(self.T1)
-        self.best_cost = len(self.leaves)
-        signal.signal(signal.SIGINT, self.exit)
-        signal.signal(signal.SIGTERM, self.exit)
 
     def run(self):
         if len(self.leaves) == 1:
@@ -648,6 +713,8 @@ class GraphSeeker:
             self.best_cost = 1
             self.exit(None, None)
         c = list(self.T1.edges())
+        # if self.treedecomp is not None:
+        #     c = self._order_edges_by_treedecomp(c)
         while True:
             n = 1
             cur_graph = create_empty_copy(self.T1)
@@ -670,29 +737,28 @@ class GraphSeeker:
                     tst_cost = len(tst_roots)
 
                     if tst_cost < cur_cost:
+                        rT1 = cur_graph.copy()
+                        rT2 = self.T2.copy()
+                        rleaves = self.leaves
+                        # rT1, rT2, rleaves = _apply_reductions(rT1, rT2, rleaves)
+                        r_roots = {find_root(rT1, l) for l in rleaves}
                         cur_min = {}
-                        get_min(cur_graph, self.leaves, cur_min)
-                        T2 = self.T2.copy()
+                        get_min(rT1, rleaves, cur_min)
                         agreement = True
-                        for T1_root in tst_roots - changed_roots:
-                            T1_leaves = set(all_leaves_tree(cur_graph, T1_root))
-                            T2_root = find_root(T2, next(iter(T1_leaves)))
-                            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves, len(T1_leaves))
-                            delete_subtree_leaves(T2, T1_leaves, T2_root)
-                        for T1_root in changed_roots:
-                            T1_leaves = set(all_leaves_tree(cur_graph, T1_root))
+                        for T1_root in r_roots:
+                            T1_leaves = set(all_leaves_tree(rT1, T1_root))
                             n_T1_leaves = len(T1_leaves)
-                            T2_root = find_root(T2, next(iter(T1_leaves)))
-                            n_leaves, T2_root = find_contracted_root(T2, T2_root, T1_leaves, n_T1_leaves)
+                            T2_root = find_root(rT2, next(iter(T1_leaves)))
+                            n_leaves, T2_root = find_contracted_root(rT2, T2_root, T1_leaves, n_T1_leaves)
                             if n_leaves != n_T1_leaves:
                                 agreement = False
                                 break
                             T2_min = {}
-                            _get_min(T2, T2_root, T1_leaves, T2_min)
-                            if not compare_trees(T1_root, cur_graph, cur_min, T2_root, T2, T2_min, T1_leaves):
+                            _get_min(rT2, T2_root, T1_leaves, T2_min)
+                            if not compare_trees(T1_root, rT1, cur_min, T2_root, rT2, T2_min, T1_leaves):
                                 agreement = False
                                 break
-                            delete_subtree_leaves(T2, T1_leaves, T2_root)
+                            delete_subtree_leaves(rT2, T1_leaves, T2_root)
                         if agreement:
                             cur_cost = tst_cost
                             cur_roots = tst_roots
@@ -703,6 +769,7 @@ class GraphSeeker:
                             continue
                     cur_graph.remove_edges_from(tst_subset)
             self.stats['run_loop_count'] += 1
+            # self.T1, self.T2 = self.T2, self.T1
             c = list(self.T1.edges())
             random.shuffle(c)
 
@@ -753,14 +820,26 @@ def read_input(f):
     n_leaves = None
     n_pending_trees = 0
     trees = []
+    treedecomp = None
 
     for line in f:
         line = line.strip()
         if not line or line.startswith('#'):
-            parts = line.lstrip('#').split()
-            if parts and parts[0] == 'p':
+            parts = line.lstrip('#').split(None, 2)
+            if not parts:
+                continue
+            if parts[0] == 'p':
                 n_pending_trees = int(parts[1])
                 n_leaves = int(parts[2])
+            elif parts[0] == 'x' and len(parts) == 3 and parts[1] == 'treedecomp':
+                data = json.loads(parts[2])
+                tw = data[0]
+                bags = [frozenset(b) for b in data[1]]
+                adj = [set() for _ in bags]
+                for b1, b2 in data[2]:
+                    adj[b1 - 1].add(b2 - 1)
+                    adj[b2 - 1].add(b1 - 1)
+                treedecomp = (tw, bags, adj)
         else:
             assert line.endswith(';'), "Newick string must end with ';'"
             trees.append(parse_newick_to_digraph(line))
@@ -768,7 +847,7 @@ def read_input(f):
             if n_pending_trees == 0:
                 break
 
-    return trees, n_leaves
+    return trees, n_leaves, treedecomp
 
 
 def tree_to_newick(g, root=None):
@@ -961,7 +1040,7 @@ def subtree_reduce_multi(trees, leaves):
 
 if __name__ == '__main__':
     random.seed(42)
-    trees, n_leaves = read_input(sys.stdin)
+    trees, n_leaves, treedecomp = read_input(sys.stdin)
     leaves = frozenset(range(1, n_leaves + 1))
     if len(trees) > 2:
         _, srmap = subtree_reduce_multi(trees, leaves)
@@ -977,5 +1056,5 @@ if __name__ == '__main__':
                     print(tree_to_newick(srmap[leaf])+";")
         sys.exit(0)
     T1, T2 = trees[0], trees[1]
-    seeker = GraphSeeker(T1, T2, leaves)
+    seeker = GraphSeeker(T1, T2, leaves, treedecomp=treedecomp)
     seeker.run()
